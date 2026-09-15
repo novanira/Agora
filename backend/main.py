@@ -1,10 +1,8 @@
 # main.py
 from fastapi import FastAPI
-
-from connectors.new_world import router as search_router
+from connectors.registry import connectors
 
 app = FastAPI()
-app.include_router(search_router)
 
 @app.get("/")
 async def root():
@@ -17,3 +15,7 @@ async def test():
         "number": 1236767676776767676767677777777777777769999999,
         'i':"s"
     }
+
+@app.get("/test-new-world")
+async def test_new_world():
+    return await connectors["new_world"].get_stores()
