@@ -7,7 +7,6 @@ from .supermarket import SupermarketConnector
 
 class WoolworthsConnector(SupermarketConnector):
     BASE_URL = "https://www.woolworths.co.nz"
-
     GRAPHQL_URL = f"{BASE_URL}/api/graphql"
 
     STORE_LOCATOR_URL = (
@@ -17,6 +16,10 @@ class WoolworthsConnector(SupermarketConnector):
     )
 
     MAX_CONCURRENT_SEARCHES = 5
+
+    # Retry settings
+    MAX_ATTEMPTS = 3
+    RETRY_BASE_DELAY = 0.75
 
     USER_AGENT = (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -37,18 +40,6 @@ class WoolworthsConnector(SupermarketConnector):
 
                 pickupLocation {
                     id
-                    name
-                }
-            }
-
-            fulfilment {
-                fulfilmentProposition {
-                    store {
-                        storeId
-                        name
-                    }
-
-                    storeId
                     name
                 }
             }
@@ -165,59 +156,67 @@ class WoolworthsConnector(SupermarketConnector):
     def __init__(self):
         self._stores_by_id: dict[str, dict] = {}
 
-    def get_headers(self) -> dict:
-        return {
-            "User-Agent": self.USER_AGENT,
-            "Accept": (
-                "application/graphql-response+json,"
-                "application/json;q=0.9"
-            ),
-            "Content-Type": "application/json",
-            "Accept-Language": "en-NZ,en;q=0.9",
-            "Origin": self.BASE_URL,
-            "Referer": f"{self.BASE_URL}/",
-        }
+        # Prevent several simultaneous requests on a fresh
+        # Render instance from all calling get_stores().
+        self._stores_lock = asyncio.Lock()
+
+    # ---------------------------------------------------------
+    # HTTP CLIENT
+    # ---------------------------------------------------------
+
+    def _timeout(self) -> httpx.Timeout:
+        return httpx.Timeout(
+            connect=10.0,
+            read=45.0,
+            write=20.0,
+            pool=10.0,
+        )
 
     def _create_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
-            headers=self.get_headers(),
+            headers={
+                "User-Agent": self.USER_AGENT,
+                "Accept": (
+                    "application/graphql-response+json,"
+                    "application/json;q=0.9"
+                ),
+                "Content-Type": "application/json",
+                "Accept-Language": "en-NZ,en;q=0.9",
+                "Origin": self.BASE_URL,
+                "Referer": f"{self.BASE_URL}/",
+            },
+
+            timeout=self._timeout(),
+
+            limits=httpx.Limits(
+                max_connections=10,
+                max_keepalive_connections=5,
+                keepalive_expiry=30.0,
+            ),
+
             follow_redirects=True,
-            timeout=20.0,
         )
 
+    # ---------------------------------------------------------
+    # STORES
+    # ---------------------------------------------------------
+
     async def get_stores(self) -> list:
-        """
-        Return selectable Woolworths supermarket stores.
-
-        store_id:
-            Woolworths pickupLocationId used by
-            SetCartShoppingMode.
-
-        store_key:
-            Expected storeKey returned by ProductSearch.
-
-        Example:
-            {
-                "store_id": "9011",
-                "store_key": "9015",
-                "name": "Paeroa Woolworths",
-                ...
-            }
-        """
-
         async with httpx.AsyncClient(
             headers={
                 "User-Agent": self.USER_AGENT,
                 "Accept": "application/json",
             },
+            timeout=self._timeout(),
             follow_redirects=True,
-            timeout=20.0,
         ) as client:
-            response = await client.get(
-                self.STORE_LOCATOR_URL
-            )
 
-            response.raise_for_status()
+            response = await self._request_with_retries(
+                client=client,
+                method="GET",
+                url=self.STORE_LOCATOR_URL,
+                stage="store locator",
+            )
 
             data = response.json()
 
@@ -229,7 +228,9 @@ class WoolworthsConnector(SupermarketConnector):
             if not isinstance(raw_store, dict):
                 continue
 
-            store = self._normalise_store(raw_store)
+            store = self._normalise_store(
+                raw_store
+            )
 
             if store is not None:
                 stores.append(store)
@@ -241,6 +242,46 @@ class WoolworthsConnector(SupermarketConnector):
 
         return stores
 
+    async def _get_store(
+        self,
+        store_id: str,
+    ) -> dict:
+
+        store = self._stores_by_id.get(
+            store_id
+        )
+
+        if store is not None:
+            return store
+
+        async with self._stores_lock:
+
+            # Check again because another request might
+            # have filled the cache while we waited.
+            store = self._stores_by_id.get(
+                store_id
+            )
+
+            if store is None:
+                await self.get_stores()
+
+                store = self._stores_by_id.get(
+                    store_id
+                )
+
+        if store is None:
+            raise ValueError(
+                f"Unknown Woolworths store_id "
+                f"{store_id!r}. "
+                "Use a store_id returned by get_stores()."
+            )
+
+        return store
+
+    # ---------------------------------------------------------
+    # PRODUCT SEARCH
+    # ---------------------------------------------------------
+
     async def search_products(
         self,
         queries: str | list[str],
@@ -248,28 +289,11 @@ class WoolworthsConnector(SupermarketConnector):
         limit: int = 48,
         page: int = 1,
     ) -> dict[str, list]:
-        """
-        Search one specific Woolworths store.
-
-        `store_id` must be a value returned by get_stores().
-
-        Examples:
-
-            await search_products(
-                "milk",
-                store_id="9011",
-            )
-
-        or:
-
-            await search_products(
-                ["milk", "eggs", "bread"],
-                store_id="9011",
-            )
-        """
 
         if not store_id:
-            raise ValueError("store_id is required")
+            raise ValueError(
+                "store_id is required"
+            )
 
         store_id = str(store_id)
 
@@ -290,44 +314,65 @@ class WoolworthsConnector(SupermarketConnector):
             dict.fromkeys(
                 query.strip()
                 for query in queries
-                if query.strip()
+                if (
+                    isinstance(query, str)
+                    and query.strip()
+                )
             )
         )
 
         if not queries:
             return {}
 
-        store = await self._get_store(store_id)
+        store = await self._get_store(
+            store_id
+        )
 
-        expected_store_key = store["store_key"]
+        expected_store_key = (
+            store["store_key"]
+        )
 
         async with self._create_client() as client:
 
-            # Create anonymous Woolworths guest session.
-            await self._initialise_session(client)
+            # Step 1:
+            # establish Woolworths guest cookies.
+            await self._initialise_session(
+                client
+            )
 
-            # Select exact store using the modern GraphQL mutation.
+            # Step 2:
+            # select the exact Woolworths store.
             await self._select_store(
                 client=client,
                 store_id=store_id,
             )
 
+            # Step 3:
+            # search all products using the SAME
+            # session + store context.
             semaphore = asyncio.Semaphore(
                 self.MAX_CONCURRENT_SEARCHES
             )
 
-            async def search(query: str):
+            async def search(
+                query: str,
+            ):
                 async with semaphore:
-                    products = await self._search_one(
-                        client=client,
-                        query=query,
-                        limit=limit,
-                        page=page,
+
+                    products = (
+                        await self._search_one(
+                            client=client,
+                            query=query,
+                            limit=limit,
+                            page=page,
+                        )
                     )
 
                     self._verify_store(
                         products=products,
-                        expected_store_key=expected_store_key,
+                        expected_store_key=(
+                            expected_store_key
+                        ),
                     )
 
                     return query, products
@@ -341,91 +386,195 @@ class WoolworthsConnector(SupermarketConnector):
 
         return dict(results)
 
-    async def _get_store(
-        self,
-        store_id: str,
-    ) -> dict:
-        """
-        Resolve a store_id into the store metadata returned
-        by get_stores().
-        """
-
-        store = self._stores_by_id.get(store_id)
-
-        if store is None:
-            await self.get_stores()
-
-            store = self._stores_by_id.get(store_id)
-
-        if store is None:
-            raise ValueError(
-                f"Unknown Woolworths store_id "
-                f"{store_id!r}. "
-                "Use a store_id returned by get_stores()."
-            )
-
-        return store
+    # ---------------------------------------------------------
+    # SESSION INITIALISATION
+    # ---------------------------------------------------------
 
     async def _initialise_session(
         self,
         client: httpx.AsyncClient,
     ) -> None:
         """
-        Load Woolworths once so the client receives the
-        anonymous guest/session cookies required by GraphQL.
+        Establish guest/session cookies.
+
+        We DO NOT download the complete Woolworths
+        homepage body.
+
+        We only wait for the response headers so that
+        httpx receives the Set-Cookie headers.
+
+        This is especially useful on Render, where
+        downloading the entire Woolworths homepage may
+        be significantly slower than locally.
         """
 
-        response = await client.get(
-            self.BASE_URL
-        )
+        last_error = None
 
-        response.raise_for_status()
+        for attempt in range(
+            1,
+            self.MAX_ATTEMPTS + 1,
+        ):
+
+            try:
+                async with client.stream(
+                    "GET",
+                    self.BASE_URL,
+                    headers={
+                        "Accept": (
+                            "text/html,"
+                            "application/xhtml+xml,"
+                            "application/xml;q=0.9,"
+                            "*/*;q=0.8"
+                        ),
+                    },
+                ) as response:
+
+                    response.raise_for_status()
+
+                    # Don't call response.aread().
+                    #
+                    # We only need the response
+                    # headers/cookies.
+                    return
+
+            except (
+                httpx.ConnectTimeout,
+                httpx.ReadTimeout,
+                httpx.WriteTimeout,
+                httpx.PoolTimeout,
+            ) as exc:
+
+                last_error = exc
+
+                if (
+                    attempt
+                    < self.MAX_ATTEMPTS
+                ):
+                    await asyncio.sleep(
+                        self.RETRY_BASE_DELAY
+                        * (
+                            2
+                            ** (
+                                attempt - 1
+                            )
+                        )
+                    )
+
+                    continue
+
+                break
+
+            except httpx.HTTPStatusError as exc:
+
+                status = (
+                    exc.response.status_code
+                )
+
+                if (
+                    status
+                    in {
+                        429,
+                        500,
+                        502,
+                        503,
+                        504,
+                    }
+                    and attempt
+                    < self.MAX_ATTEMPTS
+                ):
+
+                    await asyncio.sleep(
+                        self.RETRY_BASE_DELAY
+                        * (
+                            2
+                            ** (
+                                attempt - 1
+                            )
+                        )
+                    )
+
+                    continue
+
+                raise RuntimeError(
+                    "Woolworths session "
+                    "initialization failed "
+                    f"with HTTP {status}."
+                ) from exc
+
+            except httpx.RequestError as exc:
+
+                raise RuntimeError(
+                    "Woolworths session "
+                    "initialization failed: "
+                    f"{type(exc).__name__}: "
+                    f"{exc}"
+                ) from exc
+
+        raise RuntimeError(
+            "Woolworths session initialization "
+            "timed out after "
+            f"{self.MAX_ATTEMPTS} attempts."
+        ) from last_error
+
+    # ---------------------------------------------------------
+    # STORE SELECTION
+    # ---------------------------------------------------------
 
     async def _select_store(
         self,
         client: httpx.AsyncClient,
         store_id: str,
     ) -> None:
-        """
-        Select a Woolworths pickup store using the same
-        SetCartShoppingMode mutation used by the website.
-
-        store_id is Woolworths' pickupLocationId.
-        """
 
         payload = {
-            "operationName": "SetCartShoppingMode",
+            "operationName":
+                "SetCartShoppingMode",
 
             "variables": {
                 "setCartShoppingModeInput": {
-                    "pickupLocationId": str(store_id),
-                    "shoppingMode": "Pickup",
+                    "pickupLocationId":
+                        str(store_id),
+
+                    "shoppingMode":
+                        "Pickup",
                 }
             },
 
-            "query": self.SET_SHOPPING_MODE_QUERY,
+            "query":
+                self.SET_SHOPPING_MODE_QUERY,
         }
 
-        response = await client.post(
-            self.GRAPHQL_URL,
-            params={
-                "op-name": "SetCartShoppingMode",
-            },
-            headers={
-                "WNZX-Operation-Name":
-                    "SetCartShoppingMode",
-            },
-            json=payload,
-        )
+        response = await (
+            self._request_with_retries(
+                client=client,
+                method="POST",
+                url=self.GRAPHQL_URL,
+                stage=(
+                    "SetCartShoppingMode"
+                ),
 
-        response.raise_for_status()
+                params={
+                    "op-name":
+                        "SetCartShoppingMode",
+                },
+
+                headers={
+                    "WNZX-Operation-Name":
+                        "SetCartShoppingMode",
+                },
+
+                json=payload,
+            )
+        )
 
         data = response.json()
 
         if data.get("errors"):
+
             raise RuntimeError(
-                "Woolworths SetCartShoppingMode "
-                f"failed: {data['errors']}"
+                "Woolworths "
+                "SetCartShoppingMode failed: "
+                f"{data['errors']}"
             )
 
         try:
@@ -442,6 +591,7 @@ class WoolworthsConnector(SupermarketConnector):
             KeyError,
             TypeError,
         ) as exc:
+
             raise RuntimeError(
                 "Unexpected Woolworths "
                 "SetCartShoppingMode response"
@@ -452,12 +602,21 @@ class WoolworthsConnector(SupermarketConnector):
         )
 
         if (
-            isinstance(validation, dict)
-            and validation.get("isValid") is False
+            isinstance(
+                validation,
+                dict,
+            )
+            and validation.get(
+                "isValid"
+            ) is False
         ):
+
             raise RuntimeError(
-                "Woolworths rejected store selection: "
-                f"{validation.get('failedValidations')}"
+                "Woolworths rejected "
+                "store selection: "
+                f"{validation.get(
+                    'failedValidations'
+                )}"
             )
 
         selected_store_id = (
@@ -471,12 +630,18 @@ class WoolworthsConnector(SupermarketConnector):
             and str(selected_store_id)
             != str(store_id)
         ):
+
             raise RuntimeError(
-                "Woolworths selected the wrong "
-                "pickup location. "
+                "Woolworths selected "
+                "the wrong pickup location. "
                 f"Requested {store_id}, "
-                f"received {selected_store_id}."
+                f"received "
+                f"{selected_store_id}."
             )
+
+    # ---------------------------------------------------------
+    # INDIVIDUAL SEARCH
+    # ---------------------------------------------------------
 
     async def _search_one(
         self,
@@ -485,49 +650,71 @@ class WoolworthsConnector(SupermarketConnector):
         limit: int,
         page: int,
     ) -> list:
-        """
-        Search products using the shopping/store context
-        already selected on the current client.
-        """
 
         payload = {
-            "operationName": "ProductSearch",
+            "operationName":
+                "ProductSearch",
 
             "variables": {
                 "searchInput": {
                     "byKeyword": {
-                        "value": query,
-                        "pageIndex": page - 1,
-                        "pageSize": limit,
-                        "facetFilters": [],
-                        "staticFilters": [],
-                        "sortBy": "RELEVANCE",
+                        "value":
+                            query,
+
+                        "pageIndex":
+                            page - 1,
+
+                        "pageSize":
+                            limit,
+
+                        "facetFilters":
+                            [],
+
+                        "staticFilters":
+                            [],
+
+                        "sortBy":
+                            "RELEVANCE",
                     }
                 }
             },
 
-            "query": self.PRODUCT_SEARCH_QUERY,
+            "query":
+                self.PRODUCT_SEARCH_QUERY,
         }
 
-        response = await client.post(
-            self.GRAPHQL_URL,
-            params={
-                "op-name": "ProductSearch",
-            },
-            headers={
-                "WNZX-Operation-Name":
-                    "ProductSearch",
-            },
-            json=payload,
-        )
+        response = await (
+            self._request_with_retries(
+                client=client,
+                method="POST",
+                url=self.GRAPHQL_URL,
 
-        response.raise_for_status()
+                stage=(
+                    "ProductSearch "
+                    f"for {query!r}"
+                ),
+
+                params={
+                    "op-name":
+                        "ProductSearch",
+                },
+
+                headers={
+                    "WNZX-Operation-Name":
+                        "ProductSearch",
+                },
+
+                json=payload,
+            )
+        )
 
         data = response.json()
 
         if data.get("errors"):
+
             raise RuntimeError(
-                "Woolworths ProductSearch failed: "
+                "Woolworths "
+                "ProductSearch failed: "
                 f"{data['errors']}"
             )
 
@@ -543,92 +730,236 @@ class WoolworthsConnector(SupermarketConnector):
             KeyError,
             TypeError,
         ) as exc:
+
             raise RuntimeError(
                 "Unexpected Woolworths "
                 "ProductSearch response"
             ) from exc
 
-        if not isinstance(products, list):
+        if not isinstance(
+            products,
+            list,
+        ):
+
             raise RuntimeError(
                 "Woolworths product results "
                 "were not a list"
             )
 
-        # Woolworths sometimes inserts empty objects
-        # into sponsored/ad positions.
         return [
             product
+
             for product in products
+
             if (
-                isinstance(product, dict)
+                isinstance(
+                    product,
+                    dict,
+                )
                 and product.get("sku")
             )
         ]
+
+    # ---------------------------------------------------------
+    # RETRY HELPER
+    # ---------------------------------------------------------
+
+    async def _request_with_retries(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        *,
+        stage: str,
+        **kwargs,
+    ) -> httpx.Response:
+
+        last_error = None
+
+        for attempt in range(
+            1,
+            self.MAX_ATTEMPTS + 1,
+        ):
+
+            try:
+                response = await client.request(
+                    method,
+                    url,
+                    **kwargs,
+                )
+
+                # Retry temporary upstream failures.
+                if (
+                    response.status_code
+                    in {
+                        429,
+                        500,
+                        502,
+                        503,
+                        504,
+                    }
+                    and attempt
+                    < self.MAX_ATTEMPTS
+                ):
+
+                    await asyncio.sleep(
+                        self.RETRY_BASE_DELAY
+                        * (
+                            2
+                            ** (
+                                attempt - 1
+                            )
+                        )
+                    )
+
+                    continue
+
+                response.raise_for_status()
+
+                return response
+
+            except (
+                httpx.ConnectTimeout,
+                httpx.ReadTimeout,
+                httpx.WriteTimeout,
+                httpx.PoolTimeout,
+            ) as exc:
+
+                last_error = exc
+
+                if (
+                    attempt
+                    < self.MAX_ATTEMPTS
+                ):
+
+                    await asyncio.sleep(
+                        self.RETRY_BASE_DELAY
+                        * (
+                            2
+                            ** (
+                                attempt - 1
+                            )
+                        )
+                    )
+
+                    continue
+
+                break
+
+            except httpx.HTTPStatusError as exc:
+
+                body = (
+                    exc.response.text[:1000]
+                )
+
+                raise RuntimeError(
+                    f"Woolworths {stage} "
+                    f"failed with HTTP "
+                    f"{exc.response.status_code}. "
+                    f"Response: {body}"
+                ) from exc
+
+            except httpx.RequestError as exc:
+
+                raise RuntimeError(
+                    f"Woolworths {stage} "
+                    "failed: "
+                    f"{type(exc).__name__}: "
+                    f"{exc}"
+                ) from exc
+
+        raise RuntimeError(
+            f"Woolworths {stage} "
+            "timed out after "
+            f"{self.MAX_ATTEMPTS} attempts."
+        ) from last_error
+
+    # ---------------------------------------------------------
+    # STORE VERIFICATION
+    # ---------------------------------------------------------
 
     def _verify_store(
         self,
         products: list,
         expected_store_key: str,
     ) -> None:
-        """
-        Ensure ProductSearch is actually returning prices
-        for the store selected above.
-        """
 
         returned_store_keys = {
-            str(product["storeKey"])
+            str(
+                product["storeKey"]
+            )
 
             for product in products
 
-            if product.get("storeKey")
-            is not None
+            if product.get(
+                "storeKey"
+            ) is not None
         }
 
-        # Nothing to verify for an empty search.
         if not returned_store_keys:
             return
 
-        if returned_store_keys != {
-            str(expected_store_key)
-        }:
+        if (
+            returned_store_keys
+            != {
+                str(
+                    expected_store_key
+                )
+            }
+        ):
+
             raise RuntimeError(
-                "Woolworths store selection failed. "
+                "Woolworths store selection "
+                "failed. "
                 f"Expected storeKey "
                 f"{expected_store_key}, "
-                f"but ProductSearch returned "
-                f"{sorted(returned_store_keys)}."
+                "but ProductSearch returned "
+                f"{sorted(
+                    returned_store_keys
+                )}."
             )
+
+    # ---------------------------------------------------------
+    # STORE NORMALISATION
+    # ---------------------------------------------------------
 
     def _normalise_store(
         self,
         raw_store: dict,
     ) -> dict | None:
-        """
-        Store locator mapping inferred from the current
-        Woolworths data + captured SetCartShoppingMode call:
-
-        no:
-            pickupLocationId used by the current GraphQL API.
-
-        extra1:
-            storeKey expected from ProductSearch.
-
-        Only normal COUNTDOWN supermarket records are used.
-        """
 
         detail = raw_store.get(
             "storeDetail",
             raw_store,
         )
 
-        if not isinstance(detail, dict):
+        if not isinstance(
+            detail,
+            dict,
+        ):
             return None
 
-        if detail.get("division") != "COUNTDOWN":
+        if (
+            detail.get("division")
+            != "COUNTDOWN"
+        ):
             return None
+
+        # Verified current mapping:
+        #
+        # no
+        #   -> pickupLocationId used by
+        #      SetCartShoppingMode
+        #
+        # extra1
+        #   -> storeKey returned by
+        #      ProductSearch
 
         store_id = detail.get("no")
-        store_key = detail.get("extra1")
+
+        store_key = detail.get(
+            "extra1"
+        )
 
         if store_id in (
             None,
@@ -645,47 +976,64 @@ class WoolworthsConnector(SupermarketConnector):
             return None
 
         return {
-            "store_id": str(store_id),
+            "store_id":
+                str(store_id),
 
-            "store_key": str(store_key),
+            "store_key":
+                str(store_key),
 
-            "name": detail.get("name"),
+            "name":
+                detail.get("name"),
 
-            "address": detail.get(
-                "addressLine1"
-            ),
+            "address":
+                detail.get(
+                    "addressLine1"
+                ),
 
-            "suburb": detail.get(
-                "suburb"
-            ),
+            "suburb":
+                detail.get("suburb"),
 
-            "postcode": detail.get(
-                "postcode"
-            ),
+            "postcode":
+                detail.get(
+                    "postcode"
+                ),
 
-            "region": detail.get(
-                "state"
-            ),
+            "region":
+                detail.get("state"),
 
-            "latitude": self._to_float(
-                detail.get("latitude")
-            ),
+            "latitude":
+                self._to_float(
+                    detail.get(
+                        "latitude"
+                    )
+                ),
 
-            # The store-locator API actually spells
+            # Woolworths' API spells
             # longitude as "longtitude".
-            "longitude": self._to_float(
-                detail.get("longtitude")
-            ),
+            "longitude":
+                self._to_float(
+                    detail.get(
+                        "longtitude"
+                    )
+                ),
         }
+
+    # ---------------------------------------------------------
+    # STORE LOCATOR PARSING
+    # ---------------------------------------------------------
 
     def _extract_store_list(
         self,
         data,
     ) -> list:
+
         if isinstance(data, list):
             return data
 
-        if not isinstance(data, dict):
+        if not isinstance(
+            data,
+            dict,
+        ):
             return []
 
         for key in (
@@ -695,26 +1043,40 @@ class WoolworthsConnector(SupermarketConnector):
             "results",
             "storeList",
         ):
+
             value = data.get(key)
 
-            if isinstance(value, list):
+            if isinstance(
+                value,
+                list,
+            ):
                 return value
 
-            if isinstance(value, dict):
-                stores = self._extract_store_list(
-                    value
+            if isinstance(
+                value,
+                dict,
+            ):
+
+                stores = (
+                    self._extract_store_list(
+                        value
+                    )
                 )
 
                 if stores:
                     return stores
 
         for value in data.values():
+
             if isinstance(
                 value,
                 (dict, list),
             ):
-                stores = self._extract_store_list(
-                    value
+
+                stores = (
+                    self._extract_store_list(
+                        value
+                    )
                 )
 
                 if stores:
@@ -726,6 +1088,7 @@ class WoolworthsConnector(SupermarketConnector):
     def _to_float(
         value,
     ) -> float | None:
+
         if value in (
             None,
             "",
