@@ -335,19 +335,18 @@ class WoolworthsConnector(SupermarketConnector):
         async with self._create_client() as client:
 
             # Step 1:
-            # establish Woolworths guest cookies.
-            await self._initialise_session(
-                client
-            )
-
-            # Step 2:
-            # select the exact Woolworths store.
+            # select the exact Woolworths store directly.
+            #
+            # Do not make a separate request to the homepage first.
+            # SetCartShoppingMode is the first request in this client
+            # session, and httpx will retain any cookies Woolworths
+            # returns for the following ProductSearch requests.
             await self._select_store(
                 client=client,
                 store_id=store_id,
             )
 
-            # Step 3:
+            # Step 2:
             # search all products using the SAME
             # session + store context.
             semaphore = asyncio.Semaphore(
@@ -385,136 +384,6 @@ class WoolworthsConnector(SupermarketConnector):
             )
 
         return dict(results)
-
-    # ---------------------------------------------------------
-    # SESSION INITIALISATION
-    # ---------------------------------------------------------
-
-    async def _initialise_session(
-        self,
-        client: httpx.AsyncClient,
-    ) -> None:
-        """
-        Establish guest/session cookies.
-
-        We DO NOT download the complete Woolworths
-        homepage body.
-
-        We only wait for the response headers so that
-        httpx receives the Set-Cookie headers.
-
-        This is especially useful on Render, where
-        downloading the entire Woolworths homepage may
-        be significantly slower than locally.
-        """
-
-        last_error = None
-
-        for attempt in range(
-            1,
-            self.MAX_ATTEMPTS + 1,
-        ):
-
-            try:
-                async with client.stream(
-                    "GET",
-                    self.BASE_URL,
-                    headers={
-                        "Accept": (
-                            "text/html,"
-                            "application/xhtml+xml,"
-                            "application/xml;q=0.9,"
-                            "*/*;q=0.8"
-                        ),
-                    },
-                ) as response:
-
-                    response.raise_for_status()
-
-                    # Don't call response.aread().
-                    #
-                    # We only need the response
-                    # headers/cookies.
-                    return
-
-            except (
-                httpx.ConnectTimeout,
-                httpx.ReadTimeout,
-                httpx.WriteTimeout,
-                httpx.PoolTimeout,
-            ) as exc:
-
-                last_error = exc
-
-                if (
-                    attempt
-                    < self.MAX_ATTEMPTS
-                ):
-                    await asyncio.sleep(
-                        self.RETRY_BASE_DELAY
-                        * (
-                            2
-                            ** (
-                                attempt - 1
-                            )
-                        )
-                    )
-
-                    continue
-
-                break
-
-            except httpx.HTTPStatusError as exc:
-
-                status = (
-                    exc.response.status_code
-                )
-
-                if (
-                    status
-                    in {
-                        429,
-                        500,
-                        502,
-                        503,
-                        504,
-                    }
-                    and attempt
-                    < self.MAX_ATTEMPTS
-                ):
-
-                    await asyncio.sleep(
-                        self.RETRY_BASE_DELAY
-                        * (
-                            2
-                            ** (
-                                attempt - 1
-                            )
-                        )
-                    )
-
-                    continue
-
-                raise RuntimeError(
-                    "Woolworths session "
-                    "initialization failed "
-                    f"with HTTP {status}."
-                ) from exc
-
-            except httpx.RequestError as exc:
-
-                raise RuntimeError(
-                    "Woolworths session "
-                    "initialization failed: "
-                    f"{type(exc).__name__}: "
-                    f"{exc}"
-                ) from exc
-
-        raise RuntimeError(
-            "Woolworths session initialization "
-            "timed out after "
-            f"{self.MAX_ATTEMPTS} attempts."
-        ) from last_error
 
     # ---------------------------------------------------------
     # STORE SELECTION
@@ -868,10 +737,16 @@ class WoolworthsConnector(SupermarketConnector):
                     f"{exc}"
                 ) from exc
 
+        error_detail = (
+            f"{type(last_error).__name__}: {last_error}"
+            if last_error
+            else "unknown error"
+        )
+
         raise RuntimeError(
-            f"Woolworths {stage} "
-            "timed out after "
-            f"{self.MAX_ATTEMPTS} attempts."
+            f"Woolworths {stage} timed out after "
+            f"{self.MAX_ATTEMPTS} attempts. "
+            f"Last error: {error_detail}"
         ) from last_error
 
     # ---------------------------------------------------------
