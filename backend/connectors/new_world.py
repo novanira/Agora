@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import time
@@ -12,8 +13,10 @@ class NewWorldConnector(SupermarketConnector):
     BASE_API_URL = "https://api-prod.newworld.co.nz/v1/edge"
 
     STORES_URL = f"{BASE_API_URL}/store"
+    PRODUCTS_URL = f"{BASE_API_URL}/search/paginated/products"
 
     TOKEN_EXPIRY_MARGIN = 30
+    MAX_CONCURRENT_SEARCHES = 5
 
     USER_AGENT = (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -25,14 +28,153 @@ class NewWorldConnector(SupermarketConnector):
         self.token = None
         self.token_expires_at = 0
 
-    async def search_products(self, query: str) -> list:
-        return []
+    async def search_products(
+        self,
+        queries: str | list[str],
+        store_id: str,
+        limit: int = 48,
+        page: int = 1,
+    ) -> dict[str, list]:
+        if not store_id:
+            raise ValueError("store_id is required")
 
-    def get_token_expiry(self, token: str) -> float | None:
+        if not 1 <= limit <= 48:
+            raise ValueError("limit must be between 1 and 48")
+
+        if page < 1:
+            raise ValueError("page must be at least 1")
+
+        # Always work internally with a list.
+        if isinstance(queries, str):
+            queries = [queries]
+
+        # Strip empty queries and remove duplicates while
+        # preserving the original order.
+        queries = list(
+            dict.fromkeys(
+                query.strip()
+                for query in queries
+                if query.strip()
+            )
+        )
+
+        if not queries:
+            return {}
+
+        headers = {
+            "User-Agent": self.USER_AGENT,
+            "Accept": "application/json, text/plain, */*",
+            "Origin": self.BASE_WEB_URL,
+            "Referer": f"{self.BASE_WEB_URL}/",
+        }
+
+        async with httpx.AsyncClient(
+            headers=headers,
+            timeout=20.0,
+        ) as client:
+            # Called once for the entire batch.
+            # This will reuse the cached token if valid.
+            token = await self.get_guest_token(client)
+
+            semaphore = asyncio.Semaphore(
+                self.MAX_CONCURRENT_SEARCHES
+            )
+
+            async def search(query: str):
+                async with semaphore:
+                    products = await self._search_one(
+                        client=client,
+                        token=token,
+                        query=query,
+                        store_id=store_id,
+                        limit=limit,
+                        page=page,
+                    )
+
+                    return query, products
+
+            results = await asyncio.gather(
+                *(search(query) for query in queries)
+            )
+
+        return dict(results)
+
+    async def _search_one(
+        self,
+        client: httpx.AsyncClient,
+        token: str,
+        query: str,
+        store_id: str,
+        limit: int,
+        page: int,
+    ) -> list:
+        page_index = page - 1
+
+        payload = {
+            "algoliaQuery": {
+                "attributesToHighlight": [],
+                "attributesToRetrieve": [
+                    "productID",
+                    "Type",
+                    "sponsored",
+                    "category0NI",
+                    "category1NI",
+                    "category2NI",
+                ],
+                "facets": [
+                    "brand",
+                    "category1NI",
+                    "onPromotion",
+                    "productFacets",
+                    "tobacco",
+                ],
+                "filters": f"stores:{store_id}",
+                "highlightPostTag": "__/ais-highlight__",
+                "highlightPreTag": "__ais-highlight__",
+                "hitsPerPage": limit,
+                "maxValuesPerFacet": 100,
+                "page": page_index,
+                "query": query,
+                "analyticsTags": [
+                    "fs#WEB:desktop",
+                ],
+            },
+            "algoliaFacetQueries": [],
+            "storeId": store_id,
+            "hitsPerPage": limit,
+            "page": page_index,
+            "sortOrder": "NI_POPULARITY_ASC",
+            "tobaccoQuery": True,
+            "precisionMedia": {
+                "adDomain": "SEARCH_PAGE",
+                "adPositions": [4, 8, 12],
+                "publishImpressionEvent": False,
+                "disableAds": False,
+            },
+        }
+
+        response = await client.post(
+            self.PRODUCTS_URL,
+            headers={
+                "Authorization": f"Bearer {token}",
+            },
+            json=payload,
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        return data.get("products", [])
+
+    def get_token_expiry(
+        self,
+        token: str,
+    ) -> float | None:
         try:
             payload = token.split(".")[1]
 
-            # Add missing Base64 padding
+            # Add missing Base64 padding.
             payload += "=" * (-len(payload) % 4)
 
             decoded = base64.urlsafe_b64decode(payload)
@@ -43,19 +185,16 @@ class NewWorldConnector(SupermarketConnector):
         except Exception:
             return None
 
-    async def get_guest_token(self, client: httpx.AsyncClient) -> str:
-        # Use cached token if it is still valid
-        if self.token and time.time() < self.token_expires_at:
-            print("Using cached token")
-            print("Expires at:", self.token_expires_at)
-            print(
-                "Seconds remaining:",
-                self.token_expires_at - time.time()
-            )
-
+    async def get_guest_token(
+        self,
+        client: httpx.AsyncClient,
+    ) -> str:
+        # Reuse cached token while it remains valid.
+        if (
+            self.token
+            and time.time() < self.token_expires_at
+        ):
             return self.token
-
-        print("Fetching new token")
 
         response = await client.post(
             f"{self.BASE_WEB_URL}/api/user/get-current-user",
@@ -71,25 +210,15 @@ class NewWorldConnector(SupermarketConnector):
 
         access_token = data["access_token"]
 
-        # Prefer the expiry embedded in the JWT
         expiry = self.get_token_expiry(access_token)
 
         if expiry:
-            print("Using JWT expiry:", expiry)
-            print(
-                "Token lifetime remaining:",
-                expiry - time.time()
-            )
-
             self.token = access_token
             self.token_expires_at = (
                 expiry - self.TOKEN_EXPIRY_MARGIN
             )
 
-        # Otherwise use expires_in supplied by the API
         elif "expires_in" in data:
-            print("Using expires_in:", data["expires_in"])
-
             self.token = access_token
             self.token_expires_at = (
                 time.time()
@@ -97,13 +226,9 @@ class NewWorldConnector(SupermarketConnector):
                 - self.TOKEN_EXPIRY_MARGIN
             )
 
-        # If there is no expiry information, don't cache it
         else:
-            print(
-                "No token expiry available - "
-                "token will not be cached"
-            )
-
+            # No reliable expiry information:
+            # don't cache the token.
             self.token = None
             self.token_expires_at = 0
 
@@ -117,7 +242,10 @@ class NewWorldConnector(SupermarketConnector):
             "Referer": f"{self.BASE_WEB_URL}/",
         }
 
-        async with httpx.AsyncClient(headers=headers) as client:
+        async with httpx.AsyncClient(
+            headers=headers,
+            timeout=20.0,
+        ) as client:
             token = await self.get_guest_token(client)
 
             response = await client.get(
