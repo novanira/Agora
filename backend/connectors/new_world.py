@@ -340,7 +340,10 @@ class NewWorldConnector(SupermarketConnector):
         if brand and not name.lower().startswith(brand.lower()):
             name = f"{brand} {name}"
 
-        amount, quantity, unit = self._get_amount_quantity_and_unit(raw_product)
+        amount, quantity, unit = self._get_amount_quantity_and_unit(
+            raw_product,
+            str(product_id),
+        )
 
         return Product(
             supermarket="New World",
@@ -368,6 +371,7 @@ class NewWorldConnector(SupermarketConnector):
     def _get_amount_quantity_and_unit(
         cls,
         raw_product: dict,
+        product_id: str | None = None,
     ) -> tuple[float | None, float | None, str | None]:
         """
         Extract multipack count plus the size of each item.
@@ -376,6 +380,17 @@ class NewWorldConnector(SupermarketConnector):
             6 x 330ml -> amount=6, quantity=330, unit="ml"
             500ml     -> amount=None, quantity=500, unit="ml"
         """
+        # New World encodes the selling unit in many product IDs.
+        # Example: 5039945-KGM-000 = sold by kilogram.
+        #
+        # This is more authoritative than trying to infer a size from the
+        # product name. A loose apple may have no "1kg" text in its name, but
+        # its price is still a per-kilogram price.
+        if product_id:
+            product_id_parts = str(product_id).upper().split("-")
+            if len(product_id_parts) >= 2 and product_id_parts[1] == "KGM":
+                return None, 1.0, "kg"
+
         texts = [
             raw_product.get("size"),
             raw_product.get("packSize"),
