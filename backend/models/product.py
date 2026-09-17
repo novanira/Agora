@@ -8,6 +8,7 @@ class Product:
         price: float,
         brand: str | None = None,
         original_price: float | None = None,
+        amount: float | None = None,
         quantity: float | None = None,
         unit: str | None = None,
         barcode: str | None = None,
@@ -24,6 +25,7 @@ class Product:
         self.brand = brand
         self.original_price = original_price
 
+        self.amount = amount
         self.quantity = quantity
         self.unit = unit
 
@@ -42,6 +44,7 @@ class Product:
             "price": self.price,
             "brand": self.brand,
             "original_price": self.original_price,
+            "amount": self.amount,
             "quantity": self.quantity,
             "unit": self.unit,
             "barcode": self.barcode,
@@ -55,7 +58,7 @@ class Product:
             f"Product("
             f"name={self.name!r}, "
             f"price={self.price}, "
-            f"supermarket={self.supermarket!r}"
+            f"supermarket={self.supermarket!r}, "
             f"store_id={self.store_id!r}"
             f")"
         )

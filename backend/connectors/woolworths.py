@@ -1,8 +1,10 @@
 import asyncio
+import re
 import time
 
 import httpx
 
+from models.product import Product
 from .supermarket import SupermarketConnector
 
 
@@ -68,6 +70,7 @@ class WoolworthsConnector(SupermarketConnector):
                         imageUrl
                         storeKey
                         brand
+                        availabilityStatus
 
                         categoryHierarchyNames {
                             lvl0
@@ -108,6 +111,7 @@ class WoolworthsConnector(SupermarketConnector):
                         imageUrl
                         storeKey
                         brand
+                        availabilityStatus
 
                         categoryHierarchyNames {
                             lvl0
@@ -301,7 +305,13 @@ class WoolworthsConnector(SupermarketConnector):
         store_id: str,
         limit: int = 48,
         page: int = 1,
-    ) -> dict[str, list]:
+    ) -> dict[str, list[Product]]:
+        """
+        Search one or more queries and return every result from ``page`` onward.
+
+        ``limit`` is the Woolworths page size, not a cap on the total number of
+        returned products. Woolworths currently allows at most 48 per page.
+        """
         if not store_id:
             raise ValueError("store_id is required")
 
@@ -340,6 +350,9 @@ class WoolworthsConnector(SupermarketConnector):
                 store_id=store_id,
             )
 
+            # This limits concurrent *queries*. Pages within one query are fetched
+            # sequentially so five search terms cannot fan out into dozens of
+            # simultaneous Woolworths requests.
             semaphore = asyncio.Semaphore(self.MAX_CONCURRENT_SEARCHES)
 
             async def search_one_query(query: str):
@@ -347,15 +360,11 @@ class WoolworthsConnector(SupermarketConnector):
                     products = await self._search_one(
                         client=client,
                         query=query,
-                        limit=limit,
-                        page=page,
-                    )
-
-                    self._verify_store(
-                        products=products,
+                        store_id=store_id,
                         expected_store_key=expected_store_key,
+                        page_size=limit,
+                        start_page=page,
                     )
-
                     return query, products
 
             results = await asyncio.gather(
@@ -438,9 +447,77 @@ class WoolworthsConnector(SupermarketConnector):
         self,
         client: httpx.AsyncClient,
         query: str,
-        limit: int,
+        store_id: str,
+        expected_store_key: str,
+        page_size: int,
+        start_page: int = 1,
+    ) -> list[Product]:
+        """Fetch all pages for one query and convert them to Product objects."""
+        first_products, pagination = await self._search_page(
+            client=client,
+            query=query,
+            page_size=page_size,
+            page=start_page,
+        )
+
+        self._verify_store(
+            products=first_products,
+            expected_store_key=expected_store_key,
+        )
+
+        all_raw_products = list(first_products)
+        total_pages = self._get_total_pages(
+            pagination=pagination,
+            fallback_page_size=page_size,
+        )
+
+        # totalPages is a count, not a last-page index. Therefore if there are
+        # exactly 96 products at 48/page, total_pages == 2 and this fetches only
+        # page 2 after the first request -- never a pointless empty page 3.
+        for page_number in range(start_page + 1, total_pages + 1):
+            page_products, _ = await self._search_page(
+                client=client,
+                query=query,
+                page_size=page_size,
+                page=page_number,
+            )
+
+            self._verify_store(
+                products=page_products,
+                expected_store_key=expected_store_key,
+            )
+            all_raw_products.extend(page_products)
+
+        # Sponsored products can occasionally repeat an organic result. Keep the
+        # first occurrence of each SKU so Agora gets one Product per product_id.
+        products: list[Product] = []
+        seen_skus: set[str] = set()
+
+        for raw_product in all_raw_products:
+            sku = str(raw_product.get("sku", "")).strip()
+            if not sku or sku in seen_skus:
+                continue
+
+            product = self._to_product(
+                raw_product=raw_product,
+                store_id=store_id,
+            )
+            if product is None:
+                continue
+
+            seen_skus.add(sku)
+            products.append(product)
+
+        return products
+
+    async def _search_page(
+        self,
+        client: httpx.AsyncClient,
+        query: str,
+        page_size: int,
         page: int,
-    ) -> list:
+    ) -> tuple[list[dict], dict]:
+        """Fetch one Woolworths search page plus its pagination metadata."""
         payload = {
             "operationName": "ProductSearch",
             "variables": {
@@ -448,7 +525,7 @@ class WoolworthsConnector(SupermarketConnector):
                     "byKeyword": {
                         "value": query,
                         "pageIndex": page - 1,
-                        "pageSize": limit,
+                        "pageSize": page_size,
                         "facetFilters": [],
                         "staticFilters": [],
                         "sortBy": "RELEVANCE",
@@ -458,41 +535,372 @@ class WoolworthsConnector(SupermarketConnector):
             "query": self.PRODUCT_SEARCH_QUERY,
         }
 
-        response = await self._request_with_retries(
-            client=client,
-            method="POST",
-            url=self.GRAPHQL_URL,
-            stage=f"ProductSearch for {query!r}",
-            params={"op-name": "ProductSearch"},
-            headers={"WNZX-Operation-Name": "ProductSearch"},
-            json=payload,
-        )
+        # Woolworths can occasionally return HTTP 200 while one of its
+        # internal GraphQL services (especially pricepromo-graph-wnz) has a
+        # temporary connection failure. Retry those transient GraphQL errors
+        # just like we retry 429/5xx HTTP responses.
+        data = None
+        last_graphql_errors = None
 
-        data = response.json()
-
-        if data.get("errors"):
-            raise RuntimeError(
-                "Woolworths ProductSearch failed: "
-                f"{data['errors']}"
+        for attempt in range(1, self.MAX_ATTEMPTS + 1):
+            response = await self._request_with_retries(
+                client=client,
+                method="POST",
+                url=self.GRAPHQL_URL,
+                stage=f"ProductSearch for {query!r}, page {page}",
+                params={"op-name": "ProductSearch"},
+                headers={"WNZX-Operation-Name": "ProductSearch"},
+                json=payload,
             )
 
+            data = response.json()
+            graphql_errors = data.get("errors") or []
+
+            if not graphql_errors:
+                break
+
+            last_graphql_errors = graphql_errors
+
+            transient = all(
+                isinstance(error, dict)
+                and isinstance(error.get("extensions"), dict)
+                and error["extensions"].get("code") == "SUBREQUEST_HTTP_ERROR"
+                for error in graphql_errors
+            )
+
+            if not transient:
+                raise RuntimeError(
+                    "Woolworths ProductSearch failed: "
+                    f"{graphql_errors}"
+                )
+
+            if attempt < self.MAX_ATTEMPTS:
+                await asyncio.sleep(
+                    self.RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                )
+                continue
+
+            raise RuntimeError(
+                "Woolworths ProductSearch temporarily failed because an "
+                "internal Woolworths service could not return product pricing "
+                f"after {self.MAX_ATTEMPTS} attempts. "
+                f"Errors: {last_graphql_errors}"
+            )
+
+        if data is None:
+            raise RuntimeError("Woolworths ProductSearch returned no response data")
+
         try:
-            products = data["data"]["My"]["products"]["results"]
+            result = data["data"]["My"]["products"]
+            raw_products = result["results"]
         except (KeyError, TypeError) as exc:
             raise RuntimeError(
                 "Unexpected Woolworths ProductSearch response"
             ) from exc
 
-        if not isinstance(products, list):
+        if not isinstance(raw_products, list):
             raise RuntimeError(
                 "Woolworths product results were not a list"
             )
 
-        return [
+        products = [
             product
-            for product in products
+            for product in raw_products
             if isinstance(product, dict) and product.get("sku")
         ]
+
+        pagination = {
+            "totalCount": result.get("totalCount"),
+            "pageSize": result.get("pageSize"),
+            "totalPages": result.get("totalPages"),
+            "currentPage": result.get("currentPage"),
+        }
+
+        return products, pagination
+
+    @staticmethod
+    def _get_total_pages(
+        pagination: dict,
+        fallback_page_size: int,
+    ) -> int:
+        """Return a safe page count, including exact page-size multiples."""
+        total_pages = pagination.get("totalPages")
+
+        try:
+            total_pages = int(total_pages)
+        except (TypeError, ValueError):
+            total_pages = None
+
+        if total_pages is not None and total_pages >= 0:
+            return total_pages
+
+        # Fallback if Woolworths ever omits totalPages. Ceiling division is
+        # important here: 96 // 48 is exactly 2, not 3.
+        try:
+            total_count = max(0, int(pagination.get("totalCount") or 0))
+            page_size = int(pagination.get("pageSize") or fallback_page_size)
+        except (TypeError, ValueError):
+            return 1
+
+        if page_size <= 0:
+            page_size = fallback_page_size
+
+        return (total_count + page_size - 1) // page_size if total_count else 0
+
+    def _to_product(
+        self,
+        raw_product: dict,
+        store_id: str,
+    ) -> Product | None:
+        """Convert Woolworths-specific search JSON to Agora's Product model."""
+        sku = str(raw_product.get("sku", "")).strip()
+        name = str(raw_product.get("productName", "")).strip()
+
+        if not sku or not name:
+            return None
+
+        variants = raw_product.get("variants")
+        variant = (
+            variants[0]
+            if isinstance(variants, list) and variants and isinstance(variants[0], dict)
+            else {}
+        )
+
+        price_info = variant.get("variantPrice")
+        if not isinstance(price_info, dict):
+            price_info = {}
+
+        price = self._to_float(price_info.get("sellingPrice"))
+        if price is None:
+            # A Product requires a numeric price. Keeping a missing price as 0.0
+            # avoids dropping an out-of-stock result simply because Woolworths
+            # omitted its current sellingPrice. Availability remains explicit.
+            price = 0.0
+
+        original_price = self._to_float(price_info.get("wasPrice"))
+        if original_price is not None and original_price <= price:
+            original_price = None
+
+        amount, quantity, unit = self._extract_amount_quantity_and_unit(
+            raw_product=raw_product,
+            variant=variant,
+        )
+
+        slug = raw_product.get("slug")
+        product_url = None
+        if slug:
+            product_url = (
+                f"{self.BASE_URL}/shop/productdetails"
+                f"?stockcode={sku}&name={slug}"
+            )
+
+        return Product(
+            supermarket="Woolworths",
+            store_id=str(store_id),
+            product_id=sku,
+            name=name,
+            price=price,
+            brand=raw_product.get("brand") or None,
+            original_price=original_price,
+            amount=amount,
+            quantity=quantity,
+            unit=unit,
+            barcode=None,
+            image_url=raw_product.get("imageUrl") or None,
+            product_url=product_url,
+            available=self._is_available(raw_product),
+        )
+
+    @staticmethod
+    def _is_available(raw_product: dict) -> bool:
+        """Translate Woolworths availability status into a safe boolean.
+
+        Woolworths may return the same logical status in different formats,
+        for example ``"Out of Stock"``, ``"OUT_OF_STOCK"`` or
+        ``"OutOfStock"``. Unknown/missing values are treated as unavailable
+        so Agora never tells the user an item is in stock without evidence.
+        """
+        status = raw_product.get("availabilityStatus")
+
+        if isinstance(status, bool):
+            return status
+
+        if status is None:
+            return False
+
+        # Remove spaces/punctuation entirely so all of these normalise alike:
+        # "Out of Stock", "OUT_OF_STOCK", "out-of-stock", "OutOfStock".
+        normalised = re.sub(
+            r"[^a-z0-9]+",
+            "",
+            str(status).strip().lower(),
+        )
+
+        if not normalised:
+            return False
+
+        unavailable_markers = (
+            "outofstock",
+            "unavailable",
+            "notavailable",
+            "notinstock",
+            "soldout",
+        )
+        if any(marker in normalised for marker in unavailable_markers):
+            return False
+
+        available_markers = (
+            "instock",
+            "lowstock",
+            "limitedstock",
+            "available",
+        )
+        if any(marker in normalised for marker in available_markers):
+            return True
+
+        # Fail closed for any new/unknown enum Woolworths introduces.
+        return False
+
+    @staticmethod
+    def _extract_amount_quantity_and_unit(
+        raw_product: dict,
+        variant: dict,
+    ) -> tuple[float | None, float | None, str | None]:
+        """
+        Return:
+        - amount: number of items in a multipack, e.g. 6
+        - quantity: size of each item, e.g. 330
+        - unit: size unit, e.g. "ml"
+
+        Variable-weight products sold per kg are represented as 1 kg and any
+        minimum-order text such as "200g minimum" is deliberately ignored.
+        """
+
+        def normalise_unit(value) -> str | None:
+            if value in (None, ""):
+                return None
+
+            unit = re.sub(r"[^a-z]", "", str(value).strip().lower())
+
+            aliases = {
+                "kilogram": "kg",
+                "kilograms": "kg",
+                "kgs": "kg",
+                "gram": "g",
+                "grams": "g",
+                "litre": "l",
+                "litres": "l",
+                "liter": "l",
+                "liters": "l",
+                "millilitre": "ml",
+                "millilitres": "ml",
+                "milliliter": "ml",
+                "milliliters": "ml",
+                "ea": "each",
+                "each": "each",
+                "pk": "pack",
+                "pack": "pack",
+            }
+
+            return aliases.get(unit, unit or None)
+
+        # Woolworths exposes the actual selling basis separately from the
+        # shopper-facing variant text. If it is sold per kg, that is more
+        # meaningful than a minimum-order value such as "200g".
+        price_info = variant.get("variantPrice")
+        if not isinstance(price_info, dict):
+            price_info = {}
+
+        selling_unit = normalise_unit(price_info.get("sellingUnit"))
+        unit_of_measure = normalise_unit(variant.get("unitOfMeasure"))
+
+        purchase_unit = variant.get("purchaseUnit")
+        purchase_unit_value = None
+        if isinstance(purchase_unit, dict):
+            purchase_unit_value = normalise_unit(purchase_unit.get("unit"))
+
+        if "kg" in {selling_unit, unit_of_measure, purchase_unit_value}:
+            return None, 1.0, "kg"
+
+        candidates = [
+            str(variant.get("name") or "").strip(),
+            str(raw_product.get("productName") or "").strip(),
+        ]
+
+        # Multipacks such as:
+        # "6 x 330ml"
+        # "6x330 ml"
+        # "6 × 330mL"
+        multipack_pattern = re.compile(
+            r"\b(\d+)\s*[x×]\s*"
+            r"(\d+(?:\.\d+)?)\s*"
+            r"(kg|g|mg|l|ml)\b",
+            flags=re.IGNORECASE,
+        )
+
+        for text in candidates:
+            match = multipack_pattern.search(text)
+            if match:
+                return (
+                    float(match.group(1)),
+                    float(match.group(2)),
+                    match.group(3).lower(),
+                )
+
+        # Also support text such as "6 pack 330ml" / "6pk 330ml".
+        pack_with_size_pattern = re.compile(
+            r"\b(\d+)\s*(?:pack|pk)\b"
+            r".*?"
+            r"(\d+(?:\.\d+)?)\s*"
+            r"(kg|g|mg|l|ml)\b",
+            flags=re.IGNORECASE,
+        )
+
+        for text in candidates:
+            match = pack_with_size_pattern.search(text)
+            if match:
+                return (
+                    float(match.group(1)),
+                    float(match.group(2)),
+                    match.group(3).lower(),
+                )
+
+        # Count-only packs, e.g. "12 Pack".
+        pack_pattern = re.compile(
+            r"\b(\d+)\s*(?:pack|pk)\b",
+            flags=re.IGNORECASE,
+        )
+
+        for text in candidates:
+            match = pack_pattern.search(text)
+            if match:
+                return float(match.group(1)), None, None
+
+        # Normal single product sizes such as 500ml, 1.5L or 750g.
+        size_pattern = re.compile(
+            r"(?<![A-Za-z0-9])"
+            r"(\d+(?:\.\d+)?)\s*"
+            r"(kg|g|mg|l|ml)"
+            r"\b",
+            flags=re.IGNORECASE,
+        )
+
+        for text in candidates:
+            matches = list(size_pattern.finditer(text))
+            if matches:
+                match = matches[-1]
+                return None, float(match.group(1)), match.group(2).lower()
+
+        # Preserve a retailer-supplied unit when there is no actual size.
+        for value in (
+            unit_of_measure,
+            purchase_unit_value,
+            selling_unit,
+        ):
+            if value:
+                return None, None, value
+
+        return None, None, None
 
     # ------------------------------------------------------------------
     # RETRIES

@@ -1,10 +1,12 @@
 import asyncio
 import base64
 import json
+import re
 import time
 
 import httpx
 
+from models.product import Product
 from .supermarket import SupermarketConnector
 
 
@@ -140,9 +142,46 @@ class NewWorldConnector(SupermarketConnector):
         store_id: str,
         limit: int,
         page: int,
-    ) -> list:
+    ) -> list[Product]:
+        """Fetch all pages for one query and return Product objects."""
+        all_products: list[Product] = []
         page_index = page - 1
 
+        while True:
+            raw_products = await self._fetch_product_page(
+                client=client,
+                token=token,
+                query=query,
+                store_id=store_id,
+                limit=limit,
+                page_index=page_index,
+            )
+
+            for raw_product in raw_products:
+                product = self._to_product(raw_product, store_id)
+                if product is not None:
+                    all_products.append(product)
+
+            # If the page is not full, this was the last page.
+            # If the total is an exact multiple of `limit`, the next request
+            # returns an empty page and stops the loop correctly.
+            if len(raw_products) < limit:
+                break
+
+            page_index += 1
+
+        return all_products
+
+    async def _fetch_product_page(
+        self,
+        client: httpx.AsyncClient,
+        token: str,
+        query: str,
+        store_id: str,
+        limit: int,
+        page_index: int,
+    ) -> list[dict]:
+        """Fetch one New World product-search page."""
         payload = {
             "algoliaQuery": {
                 "attributesToHighlight": [],
@@ -161,11 +200,7 @@ class NewWorldConnector(SupermarketConnector):
                     "productFacets",
                     "tobacco",
                 ],
-
-                # This is what scopes the New World search to
-                # the single selected store.
                 "filters": f"stores:{store_id}",
-
                 "highlightPostTag": "__/ais-highlight__",
                 "highlightPreTag": "__ais-highlight__",
                 "hitsPerPage": limit,
@@ -201,7 +236,6 @@ class NewWorldConnector(SupermarketConnector):
         response.raise_for_status()
 
         data = response.json()
-
         products = data.get("products", [])
 
         if not isinstance(products, list):
@@ -210,7 +244,282 @@ class NewWorldConnector(SupermarketConnector):
                 "'products' was not a list"
             )
 
-        return products
+        return [
+            product
+            for product in products
+            if isinstance(product, dict)
+        ]
+
+    def _to_product(
+        self,
+        raw_product: dict,
+        store_id: str,
+    ) -> Product | None:
+        """Convert one New World result into the shared Product model."""
+        product_id = (
+            raw_product.get("productID")
+            or raw_product.get("productId")
+            or raw_product.get("id")
+        )
+
+        # Keep New World's normal product name first.
+        # The previous version preferred displayName, which changed some names.
+        name = (
+            raw_product.get("name")
+            or raw_product.get("productName")
+            or raw_product.get("displayName")
+        )
+
+        if product_id in (None, "") or not isinstance(name, str) or not name.strip():
+            return None
+
+        price = self._get_price(raw_product)
+        if price is None:
+            price = 0.0
+
+        brand = raw_product.get("brand")
+        if isinstance(brand, dict):
+            brand = brand.get("name")
+        if brand is not None:
+            brand = str(brand).strip() or None
+
+        # New World keeps the brand separate from the product name.
+        # Build the same title shoppers see, but avoid duplicating the brand
+        # if New World ever starts including it in `name`.
+        name = name.strip()
+        if brand and not name.lower().startswith(brand.lower()):
+            name = f"{brand} {name}"
+
+        amount, quantity, unit = self._get_amount_quantity_and_unit(raw_product)
+
+        return Product(
+            supermarket="New World",
+            store_id=str(store_id),
+            product_id=str(product_id),
+            name=name,
+            price=price,
+            brand=brand,
+            original_price=self._get_original_price(raw_product),
+            amount=amount,
+            quantity=quantity,
+            unit=unit,
+            barcode=raw_product.get("barcode") or raw_product.get("gtin"),
+            image_url=self._get_image_url(raw_product, str(product_id)),
+            product_url=(
+                raw_product.get("productUrl")
+                or raw_product.get("url")
+                or f"{self.BASE_WEB_URL}/shop/product/{str(product_id).lower()}"
+            ),
+            available=self._is_available(raw_product),
+        )
+
+
+    @classmethod
+    def _get_amount_quantity_and_unit(
+        cls,
+        raw_product: dict,
+    ) -> tuple[float | None, float | None, str | None]:
+        """
+        Extract multipack count plus the size of each item.
+
+        Example:
+            6 x 330ml -> amount=6, quantity=330, unit="ml"
+            500ml     -> amount=None, quantity=500, unit="ml"
+        """
+        texts = [
+            raw_product.get("size"),
+            raw_product.get("packSize"),
+            raw_product.get("displayName"),
+            raw_product.get("name"),
+            raw_product.get("productName"),
+        ]
+
+        texts = [
+            value.strip()
+            for value in texts
+            if isinstance(value, str) and value.strip()
+        ]
+
+        multipack_pattern = re.compile(
+            r"\b(\d+)\s*[x×]\s*"
+            r"(\d+(?:\.\d+)?)\s*"
+            r"(ml|l|g|kg|mg)\b",
+            flags=re.IGNORECASE,
+        )
+
+        for text in texts:
+            match = multipack_pattern.search(text)
+            if match:
+                return (
+                    float(match.group(1)),
+                    float(match.group(2)),
+                    match.group(3).lower(),
+                )
+
+        pack_with_size_pattern = re.compile(
+            r"\b(\d+)\s*(?:pack|pk)\b"
+            r".*?"
+            r"(\d+(?:\.\d+)?)\s*"
+            r"(ml|l|g|kg|mg)\b",
+            flags=re.IGNORECASE,
+        )
+
+        for text in texts:
+            match = pack_with_size_pattern.search(text)
+            if match:
+                return (
+                    float(match.group(1)),
+                    float(match.group(2)),
+                    match.group(3).lower(),
+                )
+
+        pack_pattern = re.compile(
+            r"\b(\d+)\s*(?:pack|pk)\b",
+            flags=re.IGNORECASE,
+        )
+
+        amount = None
+        for text in texts:
+            match = pack_pattern.search(text)
+            if match:
+                amount = float(match.group(1))
+                break
+
+        # Prefer explicit quantity/unit fields if New World supplied them.
+        quantity = cls._to_float(raw_product.get("quantity"))
+        unit = raw_product.get("unit") or raw_product.get("unitOfMeasure")
+
+        if quantity is not None and unit:
+            return amount, quantity, str(unit).strip().lower()
+
+        size_pattern = re.compile(
+            r"(?i)(\d+(?:\.\d+)?)\s*(ml|l|g|kg|mg)\b"
+        )
+
+        for text in texts:
+            matches = list(size_pattern.finditer(text))
+            if matches:
+                match = matches[-1]
+                return amount, float(match.group(1)), match.group(2).lower()
+
+        return amount, quantity, str(unit).strip().lower() if unit else None
+
+    @staticmethod
+    def _get_image_url(
+        raw_product: dict,
+        product_id: str,
+    ) -> str | None:
+        """Return New World's product image URL."""
+        for key in ("imageUrl", "imageURL", "image", "imageUri"):
+            value = raw_product.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        images = raw_product.get("images")
+        if isinstance(images, list) and images:
+            first = images[0]
+            if isinstance(first, str) and first.strip():
+                return first.strip()
+            if isinstance(first, dict):
+                for key in ("url", "imageUrl", "src"):
+                    value = first.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+
+        # Foodstuffs' public product-image CDN uses the numeric product code.
+        # This also covers search responses that omit an explicit image field.
+        numeric_id = product_id.split("-", 1)[0]
+        if numeric_id.isdigit():
+            return (
+                "https://a.fsimg.co.nz/product/retail/fan/image/400x400/"
+                f"{numeric_id}.png?w=640"
+            )
+
+        return None
+
+    @classmethod
+    def _get_price(cls, raw_product: dict) -> float | None:
+        single_price = raw_product.get("singlePrice")
+
+        if isinstance(single_price, dict):
+            price = cls._to_float(single_price.get("price"))
+            if price is not None:
+                return price / 100
+
+        price = cls._to_float(raw_product.get("averagePrice"))
+        if price is not None:
+            return price
+
+        return cls._to_float(raw_product.get("price"))
+
+    @classmethod
+    def _get_original_price(cls, raw_product: dict) -> float | None:
+        single_price = raw_product.get("singlePrice")
+
+        if isinstance(single_price, dict):
+            for key in ("wasPrice", "originalPrice"):
+                price = cls._to_float(single_price.get(key))
+                if price is not None:
+                    return price / 100
+
+        for key in ("wasPrice", "originalPrice"):
+            price = cls._to_float(raw_product.get(key))
+            if price is not None:
+                return price
+
+        return None
+
+    @staticmethod
+    def _is_available(raw_product: dict) -> bool:
+        # Prefer New World's explicit boolean fields when present.
+        for key in ("isAvailable", "available", "inStock"):
+            value = raw_product.get(key)
+            if isinstance(value, bool):
+                return value
+
+        status = (
+            raw_product.get("availabilityStatus")
+            or raw_product.get("stockStatus")
+        )
+
+        if status is not None:
+            normalised = "".join(
+                char for char in str(status).lower()
+                if char.isalnum()
+            )
+
+            if normalised in {
+                "outofstock",
+                "unavailable",
+                "notavailable",
+                "soldout",
+            }:
+                return False
+
+            if normalised in {
+                "instock",
+                "available",
+                "lowstock",
+                "limitedstock",
+            }:
+                return True
+
+            # A status was supplied but we do not recognise it.
+            return False
+
+        # The search endpoint normally returns purchasable store products.
+        # If it supplies no stock field at all, preserve the original behaviour.
+        return True
+
+    @staticmethod
+    def _to_float(value) -> float | None:
+        if value in (None, "", "null"):
+            return None
+
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     # ---------------------------------------------------------
     # GUEST TOKEN
