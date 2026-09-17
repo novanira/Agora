@@ -19,6 +19,7 @@ class WoolworthsConnector(SupermarketConnector):
     )
 
     MAX_CONCURRENT_SEARCHES = 5
+    MAX_CONCURRENT_PAGES = 3
 
     # Passive in-memory cache. This does NOT run a timer or background task.
     # The cache is checked only when get_stores() / search_products() is called.
@@ -190,8 +191,8 @@ class WoolworthsConnector(SupermarketConnector):
             },
             timeout=self._timeout(),
             limits=httpx.Limits(
-                max_connections=10,
-                max_keepalive_connections=5,
+                max_connections=15,
+                max_keepalive_connections=10,
                 keepalive_expiry=30.0,
             ),
             follow_redirects=True,
@@ -350,9 +351,10 @@ class WoolworthsConnector(SupermarketConnector):
                 store_id=store_id,
             )
 
-            # This limits concurrent *queries*. Pages within one query are fetched
-            # sequentially so five search terms cannot fan out into dozens of
-            # simultaneous Woolworths requests.
+            # Limit the number of different search terms running at once.
+            # Each query can also fetch up to MAX_CONCURRENT_PAGES result pages
+            # concurrently. The httpx connection pool still caps total live
+            # connections for this request.
             semaphore = asyncio.Semaphore(self.MAX_CONCURRENT_SEARCHES)
 
             async def search_one_query(query: str):
@@ -472,21 +474,43 @@ class WoolworthsConnector(SupermarketConnector):
         )
 
         # totalPages is a count, not a last-page index. Therefore if there are
-        # exactly 96 products at 48/page, total_pages == 2 and this fetches only
-        # page 2 after the first request -- never a pointless empty page 3.
-        for page_number in range(start_page + 1, total_pages + 1):
-            page_products, _ = await self._search_page(
-                client=client,
-                query=query,
-                page_size=page_size,
-                page=page_number,
+        # exactly 96 products at 48/page, total_pages == 2 and only page 2 is
+        # requested after the first page.
+        #
+        # Fetch the remaining pages in small concurrent batches. asyncio.gather()
+        # preserves the order of the page numbers supplied to it, so product
+        # ordering stays the same as sequential pagination.
+        remaining_pages = list(
+            range(start_page + 1, total_pages + 1)
+        )
+
+        for batch_start in range(
+            0,
+            len(remaining_pages),
+            self.MAX_CONCURRENT_PAGES,
+        ):
+            batch = remaining_pages[
+                batch_start:batch_start + self.MAX_CONCURRENT_PAGES
+            ]
+
+            page_results = await asyncio.gather(
+                *(
+                    self._search_page(
+                        client=client,
+                        query=query,
+                        page_size=page_size,
+                        page=page_number,
+                    )
+                    for page_number in batch
+                )
             )
 
-            self._verify_store(
-                products=page_products,
-                expected_store_key=expected_store_key,
-            )
-            all_raw_products.extend(page_products)
+            for page_products, _ in page_results:
+                self._verify_store(
+                    products=page_products,
+                    expected_store_key=expected_store_key,
+                )
+                all_raw_products.extend(page_products)
 
         # Sponsored products can occasionally repeat an organic result. Keep the
         # first occurrence of each SKU so Agora gets one Product per product_id.

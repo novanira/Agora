@@ -19,6 +19,7 @@ class NewWorldConnector(SupermarketConnector):
 
     TOKEN_EXPIRY_MARGIN = 30
     MAX_CONCURRENT_SEARCHES = 5
+    MAX_CONCURRENT_PAGES = 3
 
     # Passive in-memory store cache.
     # This does NOT create a timer or background task.
@@ -64,6 +65,11 @@ class NewWorldConnector(SupermarketConnector):
         return httpx.AsyncClient(
             headers=self._headers(),
             timeout=20.0,
+            limits=httpx.Limits(
+                max_connections=15,
+                max_keepalive_connections=10,
+                keepalive_expiry=30.0,
+            ),
             follow_redirects=True,
         )
 
@@ -145,30 +151,74 @@ class NewWorldConnector(SupermarketConnector):
     ) -> list[Product]:
         """Fetch all pages for one query and return Product objects."""
         all_products: list[Product] = []
-        page_index = page - 1
+        start_page_index = page - 1
+
+        # Fetch the requested first page normally.
+        first_page = await self._fetch_product_page(
+            client=client,
+            token=token,
+            query=query,
+            store_id=store_id,
+            limit=limit,
+            page_index=start_page_index,
+        )
+
+        for raw_product in first_page:
+            product = self._to_product(raw_product, store_id)
+            if product is not None:
+                all_products.append(product)
+
+        # A short first page means there are no more pages.
+        if len(first_page) < limit:
+            return all_products
+
+        next_page_index = start_page_index + 1
 
         while True:
-            raw_products = await self._fetch_product_page(
-                client=client,
-                token=token,
-                query=query,
-                store_id=store_id,
-                limit=limit,
-                page_index=page_index,
+            # New World's current response does not give us the same reliable
+            # totalPages field as Woolworths, so fetch the next few pages
+            # speculatively in a small batch.
+            page_indexes = list(
+                range(
+                    next_page_index,
+                    next_page_index + self.MAX_CONCURRENT_PAGES,
+                )
             )
 
-            for raw_product in raw_products:
-                product = self._to_product(raw_product, store_id)
-                if product is not None:
-                    all_products.append(product)
+            page_results = await asyncio.gather(
+                *(
+                    self._fetch_product_page(
+                        client=client,
+                        token=token,
+                        query=query,
+                        store_id=store_id,
+                        limit=limit,
+                        page_index=page_index,
+                    )
+                    for page_index in page_indexes
+                )
+            )
 
-            # If the page is not full, this was the last page.
-            # If the total is an exact multiple of `limit`, the next request
-            # returns an empty page and stops the loop correctly.
-            if len(raw_products) < limit:
+            reached_last_page = False
+
+            for raw_products in page_results:
+                # Once the first short page appears, later pages in this batch
+                # are beyond the end of the result set and can be ignored.
+                if reached_last_page:
+                    break
+
+                for raw_product in raw_products:
+                    product = self._to_product(raw_product, store_id)
+                    if product is not None:
+                        all_products.append(product)
+
+                if len(raw_products) < limit:
+                    reached_last_page = True
+
+            if reached_last_page:
                 break
 
-            page_index += 1
+            next_page_index += self.MAX_CONCURRENT_PAGES
 
         return all_products
 
