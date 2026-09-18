@@ -18,8 +18,8 @@ class WoolworthsConnector(SupermarketConnector):
         "tradinghours/standard/weeks/1/json"
     )
 
-    MAX_CONCURRENT_SEARCHES = 5
-    MAX_CONCURRENT_PAGES = 3
+    MAX_CONCURRENT_SEARCHES = 7
+    MAX_CONCURRENT_PAGES = 5
 
     # Passive in-memory cache. This does NOT run a timer or background task.
     # The cache is checked only when get_stores() / search_products() is called.
@@ -191,8 +191,8 @@ class WoolworthsConnector(SupermarketConnector):
             },
             timeout=self._timeout(),
             limits=httpx.Limits(
-                max_connections=15,
-                max_keepalive_connections=10,
+                max_connections=25,
+                max_keepalive_connections=15,
                 keepalive_expiry=30.0,
             ),
             follow_redirects=True,
@@ -379,6 +379,7 @@ class WoolworthsConnector(SupermarketConnector):
     # STORE SELECTION
     # ------------------------------------------------------------------
 
+
     async def _select_store(
         self,
         client: httpx.AsyncClient,
@@ -395,22 +396,57 @@ class WoolworthsConnector(SupermarketConnector):
             "query": self.SET_SHOPPING_MODE_QUERY,
         }
 
-        response = await self._request_with_retries(
-            client=client,
-            method="POST",
-            url=self.GRAPHQL_URL,
-            stage="SetCartShoppingMode",
-            params={"op-name": "SetCartShoppingMode"},
-            headers={"WNZX-Operation-Name": "SetCartShoppingMode"},
-            json=payload,
-        )
+        data = None
+        last_graphql_errors = None
 
-        data = response.json()
+        for attempt in range(1, self.MAX_ATTEMPTS + 1):
+            response = await self._request_with_retries(
+                client=client,
+                method="POST",
+                url=self.GRAPHQL_URL,
+                stage="SetCartShoppingMode",
+                params={"op-name": "SetCartShoppingMode"},
+                headers={"WNZX-Operation-Name": "SetCartShoppingMode"},
+                json=payload,
+            )
 
-        if data.get("errors"):
+            data = response.json()
+            graphql_errors = data.get("errors") or []
+
+            if not graphql_errors:
+                break
+
+            last_graphql_errors = graphql_errors
+
+            transient = all(
+                isinstance(error, dict)
+                and isinstance(error.get("extensions"), dict)
+                and error["extensions"].get("code") == "SUBREQUEST_HTTP_ERROR"
+                for error in graphql_errors
+            )
+
+            if not transient:
+                raise RuntimeError(
+                    "Woolworths SetCartShoppingMode failed: "
+                    f"{graphql_errors}"
+                )
+
+            if attempt < self.MAX_ATTEMPTS:
+                await asyncio.sleep(
+                    self.RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                )
+                continue
+
             raise RuntimeError(
-                "Woolworths SetCartShoppingMode failed: "
-                f"{data['errors']}"
+                "Woolworths SetCartShoppingMode temporarily failed because "
+                "an internal Woolworths service did not recover after "
+                f"{self.MAX_ATTEMPTS} attempts. "
+                f"Errors: {last_graphql_errors}"
+            )
+
+        if data is None:
+            raise RuntimeError(
+                "Woolworths SetCartShoppingMode returned no response data"
             )
 
         try:
@@ -671,6 +707,9 @@ class WoolworthsConnector(SupermarketConnector):
 
         return (total_count + page_size - 1) // page_size if total_count else 0
 
+
+
+
     def _to_product(
         self,
         raw_product: dict,
@@ -686,7 +725,9 @@ class WoolworthsConnector(SupermarketConnector):
         variants = raw_product.get("variants")
         variant = (
             variants[0]
-            if isinstance(variants, list) and variants and isinstance(variants[0], dict)
+            if isinstance(variants, list)
+            and variants
+            and isinstance(variants[0], dict)
             else {}
         )
 
@@ -696,9 +737,6 @@ class WoolworthsConnector(SupermarketConnector):
 
         price = self._to_float(price_info.get("sellingPrice"))
         if price is None:
-            # A Product requires a numeric price. Keeping a missing price as 0.0
-            # avoids dropping an out-of-stock result simply because Woolworths
-            # omitted its current sellingPrice. Availability remains explicit.
             price = 0.0
 
         original_price = self._to_float(price_info.get("wasPrice"))
@@ -710,8 +748,18 @@ class WoolworthsConnector(SupermarketConnector):
             variant=variant,
         )
 
+        category_level_lists = self._get_category_levels(raw_product)
+
+        category_levels = {
+            "level_0": category_level_lists[0],
+            "level_1": category_level_lists[1],
+            "level_2": category_level_lists[2],
+            "level_3": category_level_lists[3],
+        }
+
         slug = raw_product.get("slug")
         product_url = None
+
         if slug:
             product_url = (
                 f"{self.BASE_URL}/shop/productdetails"
@@ -725,6 +773,7 @@ class WoolworthsConnector(SupermarketConnector):
             name=name,
             price=price,
             brand=raw_product.get("brand") or None,
+            category_levels=category_levels,
             original_price=original_price,
             amount=amount,
             quantity=quantity,
@@ -733,6 +782,53 @@ class WoolworthsConnector(SupermarketConnector):
             image_url=raw_product.get("imageUrl") or None,
             product_url=product_url,
             available=self._is_available(raw_product),
+        )
+
+
+    @staticmethod
+    def _get_category_levels(
+        raw_product: dict,
+    ) -> tuple[list[str], list[str], list[str], list[str]]:
+        """
+        Return every Woolworths category value at levels 0 -> 3.
+
+        A level can be either one string or multiple strings. The category
+        hierarchy is already included in ProductSearch, so this creates no
+        extra Woolworths API requests.
+        """
+        hierarchy = raw_product.get("categoryHierarchyNames")
+        if not isinstance(hierarchy, dict):
+            return [], [], [], []
+
+        def clean_many(value) -> list[str]:
+            if isinstance(value, str):
+                value = value.strip()
+                return [value] if value else []
+
+            if isinstance(value, (list, tuple)):
+                result: list[str] = []
+                seen: set[str] = set()
+
+                for item in value:
+                    if not isinstance(item, str):
+                        continue
+
+                    item = item.strip()
+                    if not item or item in seen:
+                        continue
+
+                    seen.add(item)
+                    result.append(item)
+
+                return result
+
+            return []
+
+        return (
+            clean_many(hierarchy.get("lvl0")),
+            clean_many(hierarchy.get("lvl1")),
+            clean_many(hierarchy.get("lvl2")),
+            clean_many(hierarchy.get("lvl3")),
         )
 
     @staticmethod

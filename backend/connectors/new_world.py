@@ -18,8 +18,8 @@ class NewWorldConnector(SupermarketConnector):
     PRODUCTS_URL = f"{BASE_API_URL}/search/paginated/products"
 
     TOKEN_EXPIRY_MARGIN = 30
-    MAX_CONCURRENT_SEARCHES = 5
-    MAX_CONCURRENT_PAGES = 3
+    MAX_CONCURRENT_SEARCHES = 7
+    MAX_CONCURRENT_PAGES = 4
 
     # Passive in-memory store cache.
     # This does NOT create a timer or background task.
@@ -66,8 +66,8 @@ class NewWorldConnector(SupermarketConnector):
             headers=self._headers(),
             timeout=20.0,
             limits=httpx.Limits(
-                max_connections=15,
-                max_keepalive_connections=10,
+                max_connections=25,
+                max_keepalive_connections=15,
                 keepalive_expiry=30.0,
             ),
             follow_redirects=True,
@@ -140,6 +140,7 @@ class NewWorldConnector(SupermarketConnector):
 
         return dict(results)
 
+
     async def _search_one(
         self,
         client: httpx.AsyncClient,
@@ -149,11 +150,24 @@ class NewWorldConnector(SupermarketConnector):
         limit: int,
         page: int,
     ) -> list[Product]:
-        """Fetch all pages for one query and return Product objects."""
+        """Fetch all pages for one query and return unique Product objects."""
         all_products: list[Product] = []
+        seen_product_ids: set[str] = set()
         start_page_index = page - 1
 
-        # Fetch the requested first page normally.
+        def add_products(raw_products: list[dict]) -> None:
+            for raw_product in raw_products:
+                product = self._to_product(raw_product, store_id)
+                if product is None:
+                    continue
+
+                product_id = str(product.product_id)
+                if product_id in seen_product_ids:
+                    continue
+
+                seen_product_ids.add(product_id)
+                all_products.append(product)
+
         first_page = await self._fetch_product_page(
             client=client,
             token=token,
@@ -163,21 +177,14 @@ class NewWorldConnector(SupermarketConnector):
             page_index=start_page_index,
         )
 
-        for raw_product in first_page:
-            product = self._to_product(raw_product, store_id)
-            if product is not None:
-                all_products.append(product)
+        add_products(first_page)
 
-        # A short first page means there are no more pages.
         if len(first_page) < limit:
             return all_products
 
         next_page_index = start_page_index + 1
 
         while True:
-            # New World's current response does not give us the same reliable
-            # totalPages field as Woolworths, so fetch the next few pages
-            # speculatively in a small batch.
             page_indexes = list(
                 range(
                     next_page_index,
@@ -202,15 +209,10 @@ class NewWorldConnector(SupermarketConnector):
             reached_last_page = False
 
             for raw_products in page_results:
-                # Once the first short page appears, later pages in this batch
-                # are beyond the end of the result set and can be ignored.
                 if reached_last_page:
                     break
 
-                for raw_product in raw_products:
-                    product = self._to_product(raw_product, store_id)
-                    if product is not None:
-                        all_products.append(product)
+                add_products(raw_products)
 
                 if len(raw_products) < limit:
                     reached_last_page = True
@@ -239,9 +241,7 @@ class NewWorldConnector(SupermarketConnector):
                     "productID",
                     "Type",
                     "sponsored",
-                    "category0NI",
-                    "category1NI",
-                    "category2NI",
+                    "categoryTrees",
                 ],
                 "facets": [
                     "brand",
@@ -300,6 +300,9 @@ class NewWorldConnector(SupermarketConnector):
             if isinstance(product, dict)
         ]
 
+
+
+
     def _to_product(
         self,
         raw_product: dict,
@@ -312,31 +315,36 @@ class NewWorldConnector(SupermarketConnector):
             or raw_product.get("id")
         )
 
-        # Keep New World's normal product name first.
-        # The previous version preferred displayName, which changed some names.
         name = (
             raw_product.get("name")
             or raw_product.get("productName")
             or raw_product.get("displayName")
         )
 
-        if product_id in (None, "") or not isinstance(name, str) or not name.strip():
+        if (
+            product_id in (None, "")
+            or not isinstance(name, str)
+            or not name.strip()
+        ):
             return None
 
         price = self._get_price(raw_product)
         if price is None:
             price = 0.0
 
+        original_price = self._get_original_price(raw_product)
+        if original_price is not None and original_price <= price:
+            original_price = None
+
         brand = raw_product.get("brand")
         if isinstance(brand, dict):
             brand = brand.get("name")
+
         if brand is not None:
             brand = str(brand).strip() or None
 
-        # New World keeps the brand separate from the product name.
-        # Build the same title shoppers see, but avoid duplicating the brand
-        # if New World ever starts including it in `name`.
         name = name.strip()
+
         if brand and not name.lower().startswith(brand.lower()):
             name = f"{brand} {name}"
 
@@ -345,6 +353,8 @@ class NewWorldConnector(SupermarketConnector):
             str(product_id),
         )
 
+        category_levels = self._get_category_levels(raw_product)
+
         return Product(
             supermarket="New World",
             store_id=str(store_id),
@@ -352,7 +362,8 @@ class NewWorldConnector(SupermarketConnector):
             name=name,
             price=price,
             brand=brand,
-            original_price=self._get_original_price(raw_product),
+            category_levels=category_levels,
+            original_price=original_price,
             amount=amount,
             quantity=quantity,
             unit=unit,
@@ -366,6 +377,69 @@ class NewWorldConnector(SupermarketConnector):
             available=self._is_available(raw_product),
         )
 
+
+
+
+    @staticmethod
+    def _get_category_levels(
+        raw_product: dict,
+    ) -> dict[str, list[str]]:
+        """
+        Extract every New World category path from `categoryTrees`.
+
+        New World's categoryTrees start directly at the department, while
+        Woolworths includes "All Departments" above the department level.
+        To keep Agora's category hierarchy consistent across supermarkets:
+
+            Agora level_0 = All Departments
+            Agora level_1 = New World categoryTrees.level0
+            Agora level_2 = New World categoryTrees.level1
+            Agora level_3 = New World categoryTrees.level2
+
+        Products can belong to multiple category trees, so values are
+        collected and deduplicated independently at each level.
+        """
+        category_levels = {
+            "level_0": ["All Departments"],
+            "level_1": [],
+            "level_2": [],
+            "level_3": [],
+        }
+
+        trees = raw_product.get("categoryTrees")
+        if not isinstance(trees, list):
+            return category_levels
+
+        seen = {
+            "level_1": set(),
+            "level_2": set(),
+            "level_3": set(),
+        }
+
+        for tree in trees:
+            if not isinstance(tree, dict):
+                continue
+
+            # Shift New World's hierarchy down one level so it matches
+            # Woolworths' "All Departments" root level.
+            for source_index in range(3):
+                value = tree.get(f"level{source_index}")
+                if not isinstance(value, str):
+                    continue
+
+                value = value.strip()
+                if not value:
+                    continue
+
+                target_key = f"level_{source_index + 1}"
+
+                if value in seen[target_key]:
+                    continue
+
+                seen[target_key].add(value)
+                category_levels[target_key].append(value)
+
+        return category_levels
 
     @classmethod
     def _get_amount_quantity_and_unit(
