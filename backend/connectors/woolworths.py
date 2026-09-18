@@ -18,8 +18,9 @@ class WoolworthsConnector(SupermarketConnector):
         "tradinghours/standard/weeks/1/json"
     )
 
-    MAX_CONCURRENT_SEARCHES = 7
-    MAX_CONCURRENT_PAGES = 5
+    # Balanced for Render + Woolworths' API: higher values showed diminishing returns.
+    MAX_CONCURRENT_SEARCHES = 6
+    MAX_CONCURRENT_PAGES = 4
 
     # Passive in-memory cache. This does NOT run a timer or background task.
     # The cache is checked only when get_stores() / search_products() is called.
@@ -191,8 +192,8 @@ class WoolworthsConnector(SupermarketConnector):
             },
             timeout=self._timeout(),
             limits=httpx.Limits(
-                max_connections=25,
-                max_keepalive_connections=15,
+                max_connections=18,
+                max_keepalive_connections=12,
                 keepalive_expiry=30.0,
             ),
             follow_redirects=True,
