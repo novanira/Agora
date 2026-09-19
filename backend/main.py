@@ -15,7 +15,7 @@ async def test():
     return {
         "status": "ok",
         "number": 1236767676776767676767677777777777777769999999,
-        'i':"s"
+        'i':"sa"
     }
 
 @app.get("/test-new-world/stores")
