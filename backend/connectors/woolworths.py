@@ -74,6 +74,11 @@ class WoolworthsConnector(SupermarketConnector):
                         brand
                         availabilityStatus
 
+                        tags {
+                            type
+                            decisionInputs
+                        }
+
                         categoryHierarchyNames {
                             lvl0
                             lvl1
@@ -114,6 +119,11 @@ class WoolworthsConnector(SupermarketConnector):
                         storeKey
                         brand
                         availabilityStatus
+
+                        tags {
+                            type
+                            decisionInputs
+                        }
 
                         categoryHierarchyNames {
                             lvl0
@@ -712,18 +722,54 @@ class WoolworthsConnector(SupermarketConnector):
 
 
     @staticmethod
-    def _get_promotion(price_info: dict) -> dict | None:
+    def _get_promotion(
+        price_info: dict,
+        tags: list[dict] | None = None,
+    ) -> dict | None:
         """
         Convert Woolworths promotion fields into Agora's promotion format.
 
         Woolworths exposes:
         - isSpecial: normal promotion
         - isClubPrice: membership/club discount
+        - MemberPrice tags: member-only price in cents
         - wasPrice: previous price
         - savedAmount: amount saved
         """
         if not isinstance(price_info, dict):
             return None
+
+        for tag in tags if isinstance(tags, list) else []:
+            if not isinstance(tag, dict) or tag.get("type") != "MemberPrice":
+                continue
+
+            decision_inputs = tag.get("decisionInputs")
+            if not isinstance(decision_inputs, dict):
+                continue
+
+            member_price = WoolworthsConnector._to_float(
+                decision_inputs.get("promotionalPrice")
+            )
+            if member_price is None or member_price <= 0:
+                continue
+
+            member_price = round(member_price / 100, 2)
+            non_member_price = WoolworthsConnector._to_float(
+                price_info.get("sellingPrice")
+            )
+
+            return {
+                "type": "MEMBERSHIP_DISCOUNT",
+                "requires_membership": True,
+                "price": member_price,
+                "original_price": non_member_price,
+                "discount_amount": (
+                    round(non_member_price - member_price, 2)
+                    if non_member_price is not None
+                    and non_member_price > member_price
+                    else None
+                ),
+            }
 
         is_special = bool(price_info.get("isSpecial"))
         is_club_price = bool(price_info.get("isClubPrice"))
@@ -789,7 +835,7 @@ class WoolworthsConnector(SupermarketConnector):
         if original_price is not None and original_price <= price:
             original_price = None
 
-        promotion = self._get_promotion(price_info)
+        promotion = self._get_promotion(price_info, raw_product.get("tags"))
 
         amount, quantity, unit = self._extract_amount_quantity_and_unit(
             raw_product=raw_product,
