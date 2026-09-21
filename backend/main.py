@@ -8,7 +8,7 @@ app = FastAPI()
 
 @app.get("/")
 async def root():
-    return {"message": "Agora API is running44445"}
+    return "Not Found"
 
 @app.get("/test")
 async def test():
