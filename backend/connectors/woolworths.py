@@ -41,12 +41,7 @@ class WoolworthsConnector(SupermarketConnector):
     ) {
         setCartShoppingMode(input: $setCartShoppingModeInput) {
             shoppingMode {
-                mode
                 pickupLocationId
-                pickupLocation {
-                    id
-                    name
-                }
             }
             validationResult {
                 isValid
@@ -65,7 +60,6 @@ class WoolworthsConnector(SupermarketConnector):
             products(searchInput: $searchInput) {
                 results {
                     ... on ProductSummary {
-                        __typename
                         sku
                         productName
                         slug
@@ -87,7 +81,6 @@ class WoolworthsConnector(SupermarketConnector):
                         }
 
                         variants {
-                            variantKey
                             name
                             unitOfMeasure
 
@@ -96,22 +89,17 @@ class WoolworthsConnector(SupermarketConnector):
                             }
 
                             variantPrice {
-                                currency
                                 isSpecial
                                 isClubPrice
-                                isBoostOffer
                                 sellingUnit
                                 sellingPrice
                                 savedAmount
                                 wasPrice
-                                cupPrice
-                                cupUnit
                             }
                         }
                     }
 
                     ... on SponsoredProduct {
-                        __typename
                         sku
                         productName
                         slug
@@ -133,7 +121,6 @@ class WoolworthsConnector(SupermarketConnector):
                         }
 
                         variants {
-                            variantKey
                             name
                             unitOfMeasure
 
@@ -142,16 +129,12 @@ class WoolworthsConnector(SupermarketConnector):
                             }
 
                             variantPrice {
-                                currency
                                 isSpecial
                                 isClubPrice
-                                isBoostOffer
                                 sellingUnit
                                 sellingPrice
                                 savedAmount
                                 wasPrice
-                                cupPrice
-                                cupUnit
                             }
                         }
                     }
@@ -160,7 +143,6 @@ class WoolworthsConnector(SupermarketConnector):
                 totalCount
                 pageSize
                 totalPages
-                currentPage
             }
         }
     }
