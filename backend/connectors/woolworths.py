@@ -711,11 +711,56 @@ class WoolworthsConnector(SupermarketConnector):
 
 
 
+    @staticmethod
+    def _get_promotion(price_info: dict) -> dict | None:
+        """
+        Convert Woolworths promotion fields into Agora's promotion format.
+
+        Woolworths exposes:
+        - isSpecial: normal promotion
+        - isClubPrice: membership/club discount
+        - wasPrice: previous price
+        - savedAmount: amount saved
+        """
+        if not isinstance(price_info, dict):
+            return None
+
+        is_special = bool(price_info.get("isSpecial"))
+        is_club_price = bool(price_info.get("isClubPrice"))
+
+        if not is_special and not is_club_price:
+            return None
+
+        price = WoolworthsConnector._to_float(
+            price_info.get("sellingPrice")
+        )
+        original_price = WoolworthsConnector._to_float(
+            price_info.get("wasPrice")
+        )
+        saved_amount = WoolworthsConnector._to_float(
+            price_info.get("savedAmount")
+        )
+
+        return {
+            "type": (
+                "MEMBERSHIP_DISCOUNT"
+                if is_club_price
+                else "DISCOUNT"
+            ),
+            "requires_membership": is_club_price,
+            "price": price,
+            "original_price": original_price,
+            "discount_amount": saved_amount,
+        }
+
     def _to_product(
         self,
         raw_product: dict,
         store_id: str,
     ) -> Product | None:
+        
+        # return raw_product
+
         """Convert Woolworths-specific search JSON to Agora's Product model."""
         sku = str(raw_product.get("sku", "")).strip()
         name = str(raw_product.get("productName", "")).strip()
@@ -743,6 +788,8 @@ class WoolworthsConnector(SupermarketConnector):
         original_price = self._to_float(price_info.get("wasPrice"))
         if original_price is not None and original_price <= price:
             original_price = None
+
+        promotion = self._get_promotion(price_info)
 
         amount, quantity, unit = self._extract_amount_quantity_and_unit(
             raw_product=raw_product,
@@ -776,6 +823,7 @@ class WoolworthsConnector(SupermarketConnector):
             brand=raw_product.get("brand") or None,
             category_levels=category_levels,
             original_price=original_price,
+            promotion=promotion,
             amount=amount,
             quantity=quantity,
             unit=unit,

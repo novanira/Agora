@@ -16,6 +16,7 @@ class Product:
         brand: str | None = None,
         category_levels: dict[str, list[str]] | None = None,
         original_price: float | None = None,
+        promotion: dict | None = None,
         amount: float | None = None,
         quantity: float | None = None,
         unit: str | None = None,
@@ -42,6 +43,7 @@ class Product:
         )
 
         self.original_price = original_price
+        self.promotion = promotion
 
         self.amount = amount
         self.quantity = quantity
@@ -118,6 +120,7 @@ class Product:
                 for key, values in self.category_levels.items()
             },
             "original_price": self.original_price,
+            "promotion": self.promotion,
             "amount": self.amount,
             "quantity": self.quantity,
             "unit": self.unit,

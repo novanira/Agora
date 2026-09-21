@@ -309,6 +309,9 @@ class NewWorldConnector(SupermarketConnector):
         raw_product: dict,
         store_id: str,
     ) -> Product | None:
+        
+        print(raw_product)
+
         """Convert one New World result into the shared Product model."""
         product_id = (
             raw_product.get("productID")
@@ -332,6 +335,8 @@ class NewWorldConnector(SupermarketConnector):
         price = self._get_price(raw_product)
         if price is None:
             price = 0.0
+
+        promotion = self._get_promotion(raw_product)
 
         original_price = self._get_original_price(raw_product)
         if original_price is not None and original_price <= price:
@@ -362,6 +367,7 @@ class NewWorldConnector(SupermarketConnector):
             product_id=str(product_id),
             name=name,
             price=price,
+            promotion=promotion,
             brand=brand,
             category_levels=category_levels,
             original_price=original_price,
@@ -576,6 +582,57 @@ class NewWorldConnector(SupermarketConnector):
             )
 
         return None
+
+    @classmethod
+    def _get_promotion(cls, raw_product: dict) -> dict | None:
+        promotions = raw_product.get("promotions")
+
+        if not isinstance(promotions, list) or not promotions:
+            return None
+
+        promo = next(
+            (
+                p for p in promotions
+                if isinstance(p, dict) and p.get("bestPromotion")
+            ),
+            None,
+        )
+
+        if promo is None:
+            return None
+
+        reward_value = cls._to_float(
+            promo.get("rewardValue")
+        )
+
+        threshold = cls._to_float(
+            promo.get("threshold")
+        )
+
+        comparative_price = promo.get("comparativePrice", {})
+
+        unit_price = None
+        if isinstance(comparative_price, dict):
+            unit_price = cls._to_float(
+                comparative_price.get("pricePerUnit")
+            )
+
+        if reward_value is None:
+            return None
+
+        return {
+            "type": (
+                "MULTIBUY"
+                if threshold and threshold > 1
+                else "DISCOUNT"
+            ),
+            "quantity": int(threshold) if threshold else 1,
+            "total_price": reward_value / 100,
+            "requires_membership": promo.get(
+                "cardDependencyFlag",
+                False,
+            ),
+        }
 
     @classmethod
     def _get_price(cls, raw_product: dict) -> float | None:
