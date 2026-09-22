@@ -1071,7 +1071,7 @@ class WoolworthsConnector(SupermarketConnector):
         for text in candidates:
             match = pack_pattern.search(text)
             if match:
-                return float(match.group(1)), None, None
+                return float(match.group(1)), None, "pack"
 
         # Normal single product sizes such as 500ml, 1.5L or 750g.
         size_pattern = re.compile(
