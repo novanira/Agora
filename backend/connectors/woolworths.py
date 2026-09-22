@@ -715,18 +715,59 @@ class WoolworthsConnector(SupermarketConnector):
         - isSpecial: normal promotion
         - isClubPrice: membership/club discount
         - MemberPrice tags: member-only price in cents
+        - Multibuy tags: product count and total offer price in cents
         - wasPrice: previous price
         - savedAmount: amount saved
         """
         if not isinstance(price_info, dict):
             return None
 
+        multibuy = None
+
         for tag in tags if isinstance(tags, list) else []:
-            if not isinstance(tag, dict) or tag.get("type") != "MemberPrice":
+            if not isinstance(tag, dict):
+                continue
+
+            tag_type = tag.get("type")
+            if tag_type not in (
+                "MemberPrice",
+                "Multibuy_FreshDeal",
+                "Multibuy_Special",
+                "Multibuy_LowPrice",
+            ):
                 continue
 
             decision_inputs = tag.get("decisionInputs")
             if not isinstance(decision_inputs, dict):
+                continue
+
+            if tag_type != "MemberPrice":
+                if multibuy is not None:
+                    continue
+
+                quantity = WoolworthsConnector._to_float(
+                    decision_inputs.get("promotionQuantity")
+                )
+                total_price = WoolworthsConnector._to_float(
+                    decision_inputs.get("promotionalPrice")
+                )
+                if (
+                    quantity is None
+                    or quantity <= 1
+                    or not quantity.is_integer()
+                    or total_price is None
+                    or total_price <= 0
+                    or not total_price.is_integer()
+                ):
+                    continue
+
+                multibuy = {
+                    "type": "MULTIBUY",
+                    "requires_membership": False,
+                    "quantity": int(quantity),
+                    "total_price": round(total_price / 100, 2),
+                }
+                # Keep existing member-price priority, regardless of tag order.
                 continue
 
             member_price = WoolworthsConnector._to_float(
@@ -752,6 +793,9 @@ class WoolworthsConnector(SupermarketConnector):
                     else None
                 ),
             }
+
+        if multibuy is not None:
+            return multibuy
 
         is_special = bool(price_info.get("isSpecial"))
         is_club_price = bool(price_info.get("isClubPrice"))
