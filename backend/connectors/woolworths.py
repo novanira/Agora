@@ -8,6 +8,76 @@ from models.product import Product
 from .supermarket import SupermarketConnector
 
 
+# Reuse these patterns and aliases for every product in a search.
+_AVAILABILITY_PATTERN = re.compile(r"[^a-z0-9]+")
+_UNIT_PATTERN = re.compile(r"[^a-z]")
+_MULTIPACK_PATTERN = re.compile(
+    r"\b(\d+)\s*[x×]\s*(\d+(?:\.\d+)?)\s*(kg|g|mg|l|ml)\b",
+    re.IGNORECASE,
+)
+_PACK_WITH_SIZE_PATTERN = re.compile(
+    r"\b(\d+)\s*(?:pack|pk)\b.*?(\d+(?:\.\d+)?)\s*(kg|g|mg|l|ml)\b",
+    re.IGNORECASE,
+)
+_PACK_PATTERN = re.compile(r"\b(\d+)\s*(?:pack|pk)\b", re.IGNORECASE)
+_SIZE_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(\d+(?:\.\d+)?)\s*(kg|g|mg|l|ml)\b",
+    re.IGNORECASE,
+)
+_UNIT_ALIASES = {
+    "kilogram": "kg",
+    "kilograms": "kg",
+    "kgs": "kg",
+    "gram": "g",
+    "grams": "g",
+    "litre": "l",
+    "litres": "l",
+    "liter": "l",
+    "liters": "l",
+    "millilitre": "ml",
+    "millilitres": "ml",
+    "milliliter": "ml",
+    "milliliters": "ml",
+    "ea": "each",
+    "each": "each",
+    "pk": "pack",
+    "pack": "pack",
+}
+
+
+def _normalise_unit(value) -> str | None:
+    if value in (None, ""):
+        return None
+
+    unit = _UNIT_PATTERN.sub("", str(value).strip().lower())
+    return _UNIT_ALIASES.get(unit, unit or None)
+
+
+def _clean_category_values(value) -> list[str]:
+    if isinstance(value, str):
+        value = value.strip()
+        return [value] if value else []
+
+    if isinstance(value, (list, tuple)):
+        result: list[str] = []
+        seen: set[str] = set()
+
+        for item in value:
+            if not isinstance(item, str):
+                continue
+
+            item = item.strip()
+            if not item or item in seen:
+                continue
+
+            seen.add(item)
+            result.append(item)
+
+        return result
+
+    return []
+
+
 class WoolworthsConnector(SupermarketConnector):
     BASE_URL = "https://www.woolworths.co.nz"
     GRAPHQL_URL = f"{BASE_URL}/api/graphql"
@@ -148,6 +218,11 @@ class WoolworthsConnector(SupermarketConnector):
     }
     """
 
+    # These documents contain no string literals or comments. Compact their
+    # whitespace once, keeping exactly the same GraphQL fields and operations.
+    SET_SHOPPING_MODE_QUERY = " ".join(SET_SHOPPING_MODE_QUERY.split())
+    PRODUCT_SEARCH_QUERY = " ".join(PRODUCT_SEARCH_QUERY.split())
+
     def __init__(self):
         # Cached store metadata for the lifetime of this Python process.
         self._stores_by_id: dict[str, dict] = {}
@@ -185,7 +260,8 @@ class WoolworthsConnector(SupermarketConnector):
             timeout=self._timeout(),
             limits=httpx.Limits(
                 max_connections=18,
-                max_keepalive_connections=12,
+                # Retain all existing connections between page batches.
+                max_keepalive_connections=18,
                 keepalive_expiry=30.0,
             ),
             follow_redirects=True,
@@ -270,7 +346,8 @@ class WoolworthsConnector(SupermarketConnector):
         store_id = str(store_id)
 
         # Uses the cache if it is fresh; refreshes only if needed.
-        await self.get_stores()
+        if not self._store_cache_is_fresh():
+            await self.get_stores()
 
         store = self._stores_by_id.get(store_id)
         if store is not None:
@@ -323,9 +400,9 @@ class WoolworthsConnector(SupermarketConnector):
         # Strip blanks and remove duplicate queries while preserving order.
         queries = list(
             dict.fromkeys(
-                query.strip()
+                cleaned
                 for query in queries
-                if isinstance(query, str) and query.strip()
+                if isinstance(query, str) and (cleaned := query.strip())
             )
         )
 
@@ -372,7 +449,6 @@ class WoolworthsConnector(SupermarketConnector):
     # STORE SELECTION
     # ------------------------------------------------------------------
 
-
     async def _select_store(
         self,
         client: httpx.AsyncClient,
@@ -389,58 +465,16 @@ class WoolworthsConnector(SupermarketConnector):
             "query": self.SET_SHOPPING_MODE_QUERY,
         }
 
-        data = None
-        last_graphql_errors = None
-
-        for attempt in range(1, self.MAX_ATTEMPTS + 1):
-            response = await self._request_with_retries(
-                client=client,
-                method="POST",
-                url=self.GRAPHQL_URL,
-                stage="SetCartShoppingMode",
-                params={"op-name": "SetCartShoppingMode"},
-                headers={"WNZX-Operation-Name": "SetCartShoppingMode"},
-                json=payload,
-            )
-
-            data = response.json()
-            graphql_errors = data.get("errors") or []
-
-            if not graphql_errors:
-                break
-
-            last_graphql_errors = graphql_errors
-
-            transient = all(
-                isinstance(error, dict)
-                and isinstance(error.get("extensions"), dict)
-                and error["extensions"].get("code") == "SUBREQUEST_HTTP_ERROR"
-                for error in graphql_errors
-            )
-
-            if not transient:
-                raise RuntimeError(
-                    "Woolworths SetCartShoppingMode failed: "
-                    f"{graphql_errors}"
-                )
-
-            if attempt < self.MAX_ATTEMPTS:
-                await asyncio.sleep(
-                    self.RETRY_BASE_DELAY * (2 ** (attempt - 1))
-                )
-                continue
-
-            raise RuntimeError(
+        data = await self._graphql_with_retries(
+            client=client,
+            payload=payload,
+            stage="SetCartShoppingMode",
+            temporary_failure=(
                 "Woolworths SetCartShoppingMode temporarily failed because "
                 "an internal Woolworths service did not recover after "
                 f"{self.MAX_ATTEMPTS} attempts. "
-                f"Errors: {last_graphql_errors}"
-            )
-
-        if data is None:
-            raise RuntimeError(
-                "Woolworths SetCartShoppingMode returned no response data"
-            )
+            ),
+        )
 
         try:
             result = data["data"]["setCartShoppingMode"]
@@ -509,9 +543,7 @@ class WoolworthsConnector(SupermarketConnector):
         # Fetch the remaining pages in small concurrent batches. asyncio.gather()
         # preserves the order of the page numbers supplied to it, so product
         # ordering stays the same as sequential pagination.
-        remaining_pages = list(
-            range(start_page + 1, total_pages + 1)
-        )
+        remaining_pages = range(start_page + 1, total_pages + 1)
 
         for batch_start in range(
             0,
@@ -588,60 +620,16 @@ class WoolworthsConnector(SupermarketConnector):
             "query": self.PRODUCT_SEARCH_QUERY,
         }
 
-        # Woolworths can occasionally return HTTP 200 while one of its
-        # internal GraphQL services (especially pricepromo-graph-wnz) has a
-        # temporary connection failure. Retry those transient GraphQL errors
-        # just like we retry 429/5xx HTTP responses.
-        data = None
-        last_graphql_errors = None
-
-        for attempt in range(1, self.MAX_ATTEMPTS + 1):
-            response = await self._request_with_retries(
-                client=client,
-                method="POST",
-                url=self.GRAPHQL_URL,
-                stage=f"ProductSearch for {query!r}, page {page}",
-                params={"op-name": "ProductSearch"},
-                headers={"WNZX-Operation-Name": "ProductSearch"},
-                json=payload,
-            )
-
-            data = response.json()
-            graphql_errors = data.get("errors") or []
-
-            if not graphql_errors:
-                break
-
-            last_graphql_errors = graphql_errors
-
-            transient = all(
-                isinstance(error, dict)
-                and isinstance(error.get("extensions"), dict)
-                and error["extensions"].get("code") == "SUBREQUEST_HTTP_ERROR"
-                for error in graphql_errors
-            )
-
-            if not transient:
-                raise RuntimeError(
-                    "Woolworths ProductSearch failed: "
-                    f"{graphql_errors}"
-                )
-
-            if attempt < self.MAX_ATTEMPTS:
-                await asyncio.sleep(
-                    self.RETRY_BASE_DELAY * (2 ** (attempt - 1))
-                )
-                continue
-
-            raise RuntimeError(
+        data = await self._graphql_with_retries(
+            client=client,
+            payload=payload,
+            stage=f"ProductSearch for {query!r}, page {page}",
+            temporary_failure=(
                 "Woolworths ProductSearch temporarily failed because an "
                 "internal Woolworths service could not return product pricing "
                 f"after {self.MAX_ATTEMPTS} attempts. "
-                f"Errors: {last_graphql_errors}"
-            )
-
-        if data is None:
-            raise RuntimeError("Woolworths ProductSearch returned no response data")
+            ),
+        )
 
         try:
             result = data["data"]["My"]["products"]
@@ -699,9 +687,6 @@ class WoolworthsConnector(SupermarketConnector):
             page_size = fallback_page_size
 
         return (total_count + page_size - 1) // page_size if total_count else 0
-
-
-
 
     @staticmethod
     def _get_promotion(
@@ -830,9 +815,6 @@ class WoolworthsConnector(SupermarketConnector):
         raw_product: dict,
         store_id: str,
     ) -> Product | None:
-        
-        # return raw_product
-
         """Convert Woolworths-specific search JSON to Agora's Product model."""
         sku = str(raw_product.get("sku", "")).strip()
         name = str(raw_product.get("productName", "")).strip()
@@ -905,7 +887,6 @@ class WoolworthsConnector(SupermarketConnector):
             available=self._is_available(raw_product),
         )
 
-
     @staticmethod
     def _get_category_levels(
         raw_product: dict,
@@ -921,35 +902,11 @@ class WoolworthsConnector(SupermarketConnector):
         if not isinstance(hierarchy, dict):
             return [], [], [], []
 
-        def clean_many(value) -> list[str]:
-            if isinstance(value, str):
-                value = value.strip()
-                return [value] if value else []
-
-            if isinstance(value, (list, tuple)):
-                result: list[str] = []
-                seen: set[str] = set()
-
-                for item in value:
-                    if not isinstance(item, str):
-                        continue
-
-                    item = item.strip()
-                    if not item or item in seen:
-                        continue
-
-                    seen.add(item)
-                    result.append(item)
-
-                return result
-
-            return []
-
         return (
-            clean_many(hierarchy.get("lvl0")),
-            clean_many(hierarchy.get("lvl1")),
-            clean_many(hierarchy.get("lvl2")),
-            clean_many(hierarchy.get("lvl3")),
+            _clean_category_values(hierarchy.get("lvl0")),
+            _clean_category_values(hierarchy.get("lvl1")),
+            _clean_category_values(hierarchy.get("lvl2")),
+            _clean_category_values(hierarchy.get("lvl3")),
         )
 
     @staticmethod
@@ -971,10 +928,8 @@ class WoolworthsConnector(SupermarketConnector):
 
         # Remove spaces/punctuation entirely so all of these normalise alike:
         # "Out of Stock", "OUT_OF_STOCK", "out-of-stock", "OutOfStock".
-        normalised = re.sub(
-            r"[^a-z0-9]+",
-            "",
-            str(status).strip().lower(),
+        normalised = _AVAILABILITY_PATTERN.sub(
+            "", str(status).strip().lower()
         )
 
         if not normalised:
@@ -1017,34 +972,6 @@ class WoolworthsConnector(SupermarketConnector):
         minimum-order text such as "200g minimum" is deliberately ignored.
         """
 
-        def normalise_unit(value) -> str | None:
-            if value in (None, ""):
-                return None
-
-            unit = re.sub(r"[^a-z]", "", str(value).strip().lower())
-
-            aliases = {
-                "kilogram": "kg",
-                "kilograms": "kg",
-                "kgs": "kg",
-                "gram": "g",
-                "grams": "g",
-                "litre": "l",
-                "litres": "l",
-                "liter": "l",
-                "liters": "l",
-                "millilitre": "ml",
-                "millilitres": "ml",
-                "milliliter": "ml",
-                "milliliters": "ml",
-                "ea": "each",
-                "each": "each",
-                "pk": "pack",
-                "pack": "pack",
-            }
-
-            return aliases.get(unit, unit or None)
-
         # Woolworths exposes the actual selling basis separately from the
         # shopper-facing variant text. If it is sold per kg, that is more
         # meaningful than a minimum-order value such as "200g".
@@ -1052,15 +979,15 @@ class WoolworthsConnector(SupermarketConnector):
         if not isinstance(price_info, dict):
             price_info = {}
 
-        selling_unit = normalise_unit(price_info.get("sellingUnit"))
-        unit_of_measure = normalise_unit(variant.get("unitOfMeasure"))
+        selling_unit = _normalise_unit(price_info.get("sellingUnit"))
+        unit_of_measure = _normalise_unit(variant.get("unitOfMeasure"))
 
         purchase_unit = variant.get("purchaseUnit")
         purchase_unit_value = None
         if isinstance(purchase_unit, dict):
-            purchase_unit_value = normalise_unit(purchase_unit.get("unit"))
+            purchase_unit_value = _normalise_unit(purchase_unit.get("unit"))
 
-        if "kg" in {selling_unit, unit_of_measure, purchase_unit_value}:
+        if "kg" in (selling_unit, unit_of_measure, purchase_unit_value):
             return None, 1.0, "kg"
 
         candidates = [
@@ -1072,15 +999,8 @@ class WoolworthsConnector(SupermarketConnector):
         # "6 x 330ml"
         # "6x330 ml"
         # "6 × 330mL"
-        multipack_pattern = re.compile(
-            r"\b(\d+)\s*[x×]\s*"
-            r"(\d+(?:\.\d+)?)\s*"
-            r"(kg|g|mg|l|ml)\b",
-            flags=re.IGNORECASE,
-        )
-
         for text in candidates:
-            match = multipack_pattern.search(text)
+            match = _MULTIPACK_PATTERN.search(text)
             if match:
                 return (
                     float(match.group(1)),
@@ -1089,16 +1009,8 @@ class WoolworthsConnector(SupermarketConnector):
                 )
 
         # Also support text such as "6 pack 330ml" / "6pk 330ml".
-        pack_with_size_pattern = re.compile(
-            r"\b(\d+)\s*(?:pack|pk)\b"
-            r".*?"
-            r"(\d+(?:\.\d+)?)\s*"
-            r"(kg|g|mg|l|ml)\b",
-            flags=re.IGNORECASE,
-        )
-
         for text in candidates:
-            match = pack_with_size_pattern.search(text)
+            match = _PACK_WITH_SIZE_PATTERN.search(text)
             if match:
                 return (
                     float(match.group(1)),
@@ -1107,30 +1019,17 @@ class WoolworthsConnector(SupermarketConnector):
                 )
 
         # Count-only packs, e.g. "12 Pack".
-        pack_pattern = re.compile(
-            r"\b(\d+)\s*(?:pack|pk)\b",
-            flags=re.IGNORECASE,
-        )
-
         for text in candidates:
-            match = pack_pattern.search(text)
+            match = _PACK_PATTERN.search(text)
             if match:
                 return float(match.group(1)), None, "pack"
 
         # Normal single product sizes such as 500ml, 1.5L or 750g.
-        size_pattern = re.compile(
-            r"(?<![A-Za-z0-9])"
-            r"(\d+(?:\.\d+)?)\s*"
-            r"(kg|g|mg|l|ml)"
-            r"\b",
-            flags=re.IGNORECASE,
-        )
-
         for text in candidates:
-            matches = list(size_pattern.finditer(text))
+            matches = _SIZE_PATTERN.findall(text)
             if matches:
-                match = matches[-1]
-                return None, float(match.group(1)), match.group(2).lower()
+                quantity, unit = matches[-1]
+                return None, float(quantity), unit.lower()
 
         # Preserve a retailer-supplied unit when there is no actual size.
         for value in (
@@ -1146,6 +1045,59 @@ class WoolworthsConnector(SupermarketConnector):
     # ------------------------------------------------------------------
     # RETRIES
     # ------------------------------------------------------------------
+
+    async def _graphql_with_retries(
+        self,
+        client: httpx.AsyncClient,
+        payload: dict,
+        stage: str,
+        temporary_failure: str,
+    ) -> dict:
+        """Retry transient GraphQL errors using the existing HTTP retry policy."""
+        operation = payload["operationName"]
+        data = None
+
+        for attempt in range(1, self.MAX_ATTEMPTS + 1):
+            response = await self._request_with_retries(
+                client=client,
+                method="POST",
+                url=self.GRAPHQL_URL,
+                stage=stage,
+                params={"op-name": operation},
+                headers={"WNZX-Operation-Name": operation},
+                json=payload,
+            )
+            data = response.json()
+            graphql_errors = data.get("errors") or []
+
+            if not graphql_errors:
+                break
+
+            transient = all(
+                isinstance(error, dict)
+                and isinstance(error.get("extensions"), dict)
+                and error["extensions"].get("code") == "SUBREQUEST_HTTP_ERROR"
+                for error in graphql_errors
+            )
+            if not transient:
+                raise RuntimeError(
+                    f"Woolworths {operation} failed: {graphql_errors}"
+                )
+
+            if attempt < self.MAX_ATTEMPTS:
+                await asyncio.sleep(
+                    self.RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                )
+                continue
+
+            raise RuntimeError(f"{temporary_failure}Errors: {graphql_errors}")
+
+        if data is None:
+            raise RuntimeError(
+                f"Woolworths {operation} returned no response data"
+            )
+
+        return data
 
     async def _request_with_retries(
         self,
