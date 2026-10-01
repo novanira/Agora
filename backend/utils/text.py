@@ -24,3 +24,4 @@ def test_fuzzy_similarity(text1, text2):
 
 for names in test_names:
     test_fuzzy_similarity(names[0], names[1])
+    
