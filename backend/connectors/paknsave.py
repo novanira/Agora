@@ -9,4 +9,9 @@ import httpx
 from .supermarket import SupermarketConnector
 
 class PakNSaveConnector(SupermarketConnector):
-    pass
+    def __init__(self):
+        pass
+    def get_stores(self):
+        pass
+    def search_products(self):
+        pass
