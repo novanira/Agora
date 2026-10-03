@@ -310,7 +310,7 @@ class NewWorldConnector(SupermarketConnector):
         store_id: str,
     ) -> Product | None:
         
-        print(raw_product)
+        # print(raw_product)
 
         """Convert one New World result into the shared Product model."""
         product_id = (

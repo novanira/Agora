@@ -66,3 +66,14 @@ async def test_woolworths_products(
                 "message": str(exc),
             },
         )
+
+
+# -------------------------
+# PakNSave test routes
+# -------------------------
+
+@app.get("/test-paknsave/stores")
+async def test_paknsave_stores():
+    return await connectors[
+        "paknsave"
+    ].get_stores()
