@@ -5311,7 +5311,6 @@ MATCHED_PRODUCT_PAIRS: list[tuple[Product, Product]] = [
 MATCHED_PRODUCT_IDS: list[tuple[str, str]] = [
     (new_world.product_id, woolworths.product_id)
     for new_world, woolworths in MATCHED_PRODUCT_PAIRS
-]
 
 
 # Negative pairs reuse the positive examples' original, unchanged Product objects.
