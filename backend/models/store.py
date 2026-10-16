@@ -13,3 +13,4 @@ class Store:
         self.id = id
         self.latitude = latitude
         self.longitude = longitude
+        self.address = address

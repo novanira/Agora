@@ -1,20 +1,22 @@
 import asyncio
 import base64
 import json
-import re
 import time
 
 import httpx
 
+from models.product import Product
 from .supermarket import SupermarketConnector
 
 class PakNSaveConnector(SupermarketConnector):
     BASE_WEB_URL = "https://www.paknsave.co.nz"
     BASE_API_URL = "https://api-prod.paknsave.co.nz/v1/edge"
 
-    PRODUCTS_URL = f"{BASE_API_URL}/search/paginated/products"
-
     TOKEN_EXPIRY_MARGIN = 30
+    STORE_CACHE_TTL_SECONDS = 6 * 60 * 60
+
+    MAX_CONCURRENT_SEARCHES = 6
+    MAX_CONCURRENT_PAGES = 3
 
     USER_AGENT = (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -26,6 +28,10 @@ class PakNSaveConnector(SupermarketConnector):
         self._token: str | None = None
         self._token_expires_at = 0.0
         self._token_lock = asyncio.Lock()
+
+        self._stores: list = []
+        self._stores_cached_at: float | None = None
+        self._stores_lock = asyncio.Lock()
 
 
     def _create_client(self) -> httpx.AsyncClient:
@@ -91,7 +97,14 @@ class PakNSaveConnector(SupermarketConnector):
 
             return token
 
-    async def get_stores(self):
+    def _is_store_cache_fresh(self) -> bool:
+        if not self._stores or self._stores_cached_at is None:
+            return False
+        age = time.monotonic() - self._stores_cached_at
+        return age < self.STORE_CACHE_TTL_SECONDS
+        
+
+    async def _fetch_stores(self):
         async with self._create_client() as client:
             token = await self.get_guest_token(client)
 
@@ -104,6 +117,84 @@ class PakNSaveConnector(SupermarketConnector):
 
             return response.json().get("stores", [])
 
+    async def get_stores(self, force_refresh: bool = False) -> list:
+        if not force_refresh and self._is_store_cache_fresh():
+            print('from store cache')
+            return list(self._stores)
 
-    def search_products(self):
+        async with self._stores_lock:
+            if not force_refresh and self._is_store_cache_fresh():
+                return list(self._stores)
+
+            stores = await self._fetch_stores()
+
+            self._stores = stores
+            self._stores_cached_at = time.monotonic()
+
+            print('caching stores')
+
+            return list(self._stores)
+
+    async def _fetch_product_page(
+        self,
+        client: httpx.AsyncClient,
+        token: str,
+        query: str,
+        store_id: str,
+        limit: int,
+        page_index: int,
+    ) -> list[dict]:
         pass
+
+    async def _search_one(
+        self,
+        client: httpx.AsyncClient,
+        token: str,
+        query: str,
+        store_id: str,
+        limit: int,
+        page: int,
+    ) -> list:
+        pass
+
+    async def search_products(
+        self,
+        queries: str | list[str],
+        store_id: str,
+        limit: int = 48,
+        page: int = 1
+    ) -> dict:
+        if not store_id:
+            raise ValueError("store_id is required")
+        store_id = str(store_id)
+        if not 1 <= limit <= 48:
+            raise ValueError("limit must be between 1 and 48")
+        if page < 1:
+            raise ValueError("page must be at least 1")
+        if isinstance(queries, str):
+            queries = [queries]
+        queries = list(dict.fromkeys(query.strip() for query in queries if isinstance(query, str) and query.strip()))
+        if not queries:
+            return {}
+
+        async with self._create_client() as client:
+            token = await self.get_guest_token(client)
+            semaphore = asyncio.Semaphore(self.MAX_CONCURRENT_SEARCHES)
+            async def search(query: str):
+                async with semaphore:
+                    products = await self._search_one(
+                        client=client,
+                        token=token,
+                        query=query,
+                        store_id=store_id,
+                        limit=limit,
+                        page=page,
+                    )
+
+                    return query, products
+
+            results = await asyncio.gather(
+                *(search(query) for query in queries)
+            )
+
+        return dict(results)
