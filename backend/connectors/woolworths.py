@@ -376,9 +376,12 @@ class WoolworthsConnector(SupermarketConnector):
         store_id: str,
         limit: int = 48,
         page: int = 1,
+        pages: int | None = None,
     ) -> dict[str, list[Product]]:
         """
-        Search one or more queries and return every result from ``page`` onward.
+        By default, return every result for each query from ``page`` onward.
+
+        ``pages`` optionally caps the number of pages fetched per query.
 
         ``limit`` is the Woolworths page size, not a cap on the total number of
         returned products. Woolworths currently allows at most 48 per page.
@@ -393,6 +396,9 @@ class WoolworthsConnector(SupermarketConnector):
 
         if page < 1:
             raise ValueError("page must be at least 1")
+
+        if pages is not None and (type(pages) is not int or pages < 1):
+            raise ValueError("pages must be None or a positive integer")
 
         if isinstance(queries, str):
             queries = [queries]
@@ -436,6 +442,7 @@ class WoolworthsConnector(SupermarketConnector):
                         expected_store_key=expected_store_key,
                         page_size=limit,
                         start_page=page,
+                        pages=pages,
                     )
                     return query, products
 
@@ -516,8 +523,9 @@ class WoolworthsConnector(SupermarketConnector):
         expected_store_key: str,
         page_size: int,
         start_page: int = 1,
+        pages: int | None = None,
     ) -> list[Product]:
-        """Fetch all pages for one query and convert them to Product objects."""
+        """Fetch all or up to ``pages`` pages and convert them to Product objects."""
         first_products, pagination = await self._search_page(
             client=client,
             query=query,
@@ -535,6 +543,8 @@ class WoolworthsConnector(SupermarketConnector):
             pagination=pagination,
             fallback_page_size=page_size,
         )
+        if pages is not None:
+            total_pages = min(total_pages, start_page + pages - 1)
 
         # totalPages is a count, not a last-page index. Therefore if there are
         # exactly 96 products at 48/page, total_pages == 2 and only page 2 is

@@ -84,7 +84,9 @@ class NewWorldConnector(SupermarketConnector):
         store_id: str,
         limit: int = 48,
         page: int = 1,
+        pages: int | None = None,
     ) -> dict[str, list]:
+        """Fetch all results by default, or at most ``pages`` pages per query."""
         if not store_id:
             raise ValueError("store_id is required")
 
@@ -95,6 +97,9 @@ class NewWorldConnector(SupermarketConnector):
 
         if page < 1:
             raise ValueError("page must be at least 1")
+
+        if pages is not None and (type(pages) is not int or pages < 1):
+            raise ValueError("pages must be None or a positive integer")
 
         # Always work internally with a list.
         if isinstance(queries, str):
@@ -131,6 +136,7 @@ class NewWorldConnector(SupermarketConnector):
                         store_id=store_id,
                         limit=limit,
                         page=page,
+                        pages=pages,
                     )
 
                     return query, products
@@ -150,8 +156,9 @@ class NewWorldConnector(SupermarketConnector):
         store_id: str,
         limit: int,
         page: int,
+        pages: int | None = None,
     ) -> list[Product]:
-        """Fetch all pages for one query and return unique Product objects."""
+        """Fetch all or up to ``pages`` pages and return unique Product objects."""
         all_products: list[Product] = []
         seen_product_ids: set[str] = set()
         start_page_index = page - 1
@@ -192,6 +199,13 @@ class NewWorldConnector(SupermarketConnector):
                     next_page_index + self.MAX_CONCURRENT_PAGES,
                 )
             )
+            if pages is not None:
+                page_indexes = [
+                    index for index in page_indexes
+                    if index < start_page_index + pages
+                ]
+            if not page_indexes:
+                break
 
             page_results = await asyncio.gather(
                 *(
@@ -309,7 +323,7 @@ class NewWorldConnector(SupermarketConnector):
         raw_product: dict,
         store_id: str,
     ) -> Product | None:
-        
+
         # print(raw_product)
 
         """Convert one New World result into the shared Product model."""
