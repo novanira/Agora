@@ -538,7 +538,6 @@ class WoolworthsConnector(SupermarketConnector):
             expected_store_key=expected_store_key,
         )
 
-        all_raw_products = list(first_products)
         total_pages = self._get_total_pages(
             pagination=pagination,
             fallback_page_size=page_size,
@@ -550,58 +549,59 @@ class WoolworthsConnector(SupermarketConnector):
         # exactly 96 products at 48/page, total_pages == 2 and only page 2 is
         # requested after the first page.
         #
-        # Fetch the remaining pages in small concurrent batches. asyncio.gather()
-        # preserves the order of the page numbers supplied to it, so product
-        # ordering stays the same as sequential pagination.
+        # Refill each free page slot immediately instead of waiting for a whole
+        # batch. Store results by page index to preserve provider ordering.
         remaining_pages = range(start_page + 1, total_pages + 1)
+        raw_pages = [first_products] + [[] for _ in remaining_pages]
+        page_iterator = iter(enumerate(remaining_pages, start=1))
 
-        for batch_start in range(
-            0,
-            len(remaining_pages),
-            self.MAX_CONCURRENT_PAGES,
-        ):
-            batch = remaining_pages[
-                batch_start:batch_start + self.MAX_CONCURRENT_PAGES
-            ]
-
-            page_results = await asyncio.gather(
-                *(
-                    self._search_page(
-                        client=client,
-                        query=query,
-                        page_size=page_size,
-                        page=page_number,
-                    )
-                    for page_number in batch
+        async def fetch_pages():
+            for index, page_number in page_iterator:
+                page_products, _ = await self._search_page(
+                    client=client,
+                    query=query,
+                    page_size=page_size,
+                    page=page_number,
                 )
-            )
-
-            for page_products, _ in page_results:
                 self._verify_store(
                     products=page_products,
                     expected_store_key=expected_store_key,
                 )
-                all_raw_products.extend(page_products)
+                raw_pages[index] = page_products
+
+        workers = [
+            asyncio.create_task(fetch_pages())
+            for _ in range(min(self.MAX_CONCURRENT_PAGES, len(remaining_pages)))
+        ]
+        try:
+            await asyncio.gather(*workers)
+        except BaseException:
+            # Stop sibling workers before propagating the original error.
+            for worker in workers:
+                worker.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
+            raise
 
         # Sponsored products can occasionally repeat an organic result. Keep the
         # first occurrence of each SKU so Agora gets one Product per product_id.
         products: list[Product] = []
         seen_skus: set[str] = set()
 
-        for raw_product in all_raw_products:
-            sku = str(raw_product.get("sku", "")).strip()
-            if not sku or sku in seen_skus:
-                continue
+        for raw_products in raw_pages:
+            for raw_product in raw_products:
+                sku = str(raw_product.get("sku", "")).strip()
+                if not sku or sku in seen_skus:
+                    continue
 
-            product = self._to_product(
-                raw_product=raw_product,
-                store_id=store_id,
-            )
-            if product is None:
-                continue
+                product = self._to_product(
+                    raw_product=raw_product,
+                    store_id=store_id,
+                )
+                if product is None:
+                    continue
 
-            seen_skus.add(sku)
-            products.append(product)
+                seen_skus.add(sku)
+                products.append(product)
 
         return products
 
