@@ -58,7 +58,7 @@ async def test_woolworths_products(
     query: list[str] = Query(...),
 ):
     try:
-        return await connectors[
+        matches = await connectors[
             "woolworths"
         ].search_products(
             queries=query,
@@ -73,6 +73,13 @@ async def test_woolworths_products(
                 "message": str(exc),
             },
         )
+
+    return JSONResponse(
+        content={
+            term: [vars(product) for product in products]
+            for term, products in matches.items()
+        },
+    )
 
 
 # ----------------------
