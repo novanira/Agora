@@ -79,8 +79,12 @@ export default function ShoppingList() {
           )}
 
           <div className="page-actions">
-            <Link className="button" to="/stores">
-              Choose supermarkets
+            <Link
+                className="button"
+                to="/stores"
+                state={{ from: "/list" }}
+            >
+            Choose supermarkets
             </Link>
             <Link className="button secondary" to="/search">
               Search products

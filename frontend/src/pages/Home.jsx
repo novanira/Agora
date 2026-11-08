@@ -30,7 +30,7 @@ export default function Home() {
     <main className="home">
       <div className="home-content">
         <div className="hero">
-          <span className="eyebrow">A SMARTER WAY TO SHOP</span>
+          <span className="eyebrow">OPTIMISED SHOPPING FOR EVERYONE</span>
           <h1>
             Your whole grocery shop,
             <span> for less.</span>

@@ -1,9 +1,8 @@
 
 :root {
-  font-family: Inter, -apple-system, BlinkMacSystemFont,
-    "Segoe UI", sans-serif;
+  font-family: "DM Sans", sans-serif;
   color: #20362b;
-  background: #fafbf8;
+  background: #fcfaf7;
 }
 
 * {
@@ -75,20 +74,20 @@ input::placeholder {
 /* Header */
 
 .header {
-  height: 76px;
-  padding: 0 clamp(20px, 5vw, 72px);
+  height: 64px;
+  padding: 0 clamp(20px, 5vw, 42px);
   background: white;
   border-bottom: 1px solid #e7ede7;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
+  gap: 24px;
 }
 
 .logo {
   font-size: 25px;
   font-weight: 750;
-  letter-spacing: -1px;
+  letter-spacing: -0.5px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -108,11 +107,11 @@ input::placeholder {
 .navigation {
   display: flex;
   align-items: center;
-  gap: 25px;
+  gap: 28px;
 }
 
 .navigation a {
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 500;
   color: #728076;
 }
@@ -167,7 +166,7 @@ input::placeholder {
 
 .home {
   min-height: calc(100vh - 76px);
-  padding: 40px 24px;
+  padding: 40px 32px;
   display: flex;
   justify-content: center;
   align-items: center;
@@ -179,7 +178,7 @@ input::placeholder {
 
 .home-content {
   width: 100%;
-  max-width: 650px;
+  max-width: 720px;
   text-align: center;
   animation: appear 0.45s ease both;
 }
@@ -190,10 +189,10 @@ input::placeholder {
 }
 
 .hero h1 {
-  font-size: clamp(36px, 6vw, 54px);
+  font-size: clamp(36px, 6vw, 60px);
   letter-spacing: -2px;
   line-height: 1.15;
-  margin: 18px 0;
+  margin: 12px 0;
 }
 
 .hero h1 span {
@@ -405,22 +404,22 @@ input::placeholder {
 
 /* Mobile */
 
-@media (max-width: 700px) {
+@media (max-width: 750px) {
   .header {
-    height: 68px;
-    padding: 0 18px;
+    height: 60px;
+    padding: 0 24px;
   }
 
   .navigation {
-    gap: 12px;
+    gap: 20px;
   }
 
   .navigation a {
-    font-size: 11px;
+    font-size: 15px;
   }
 
   .logo {
-    font-size: 20px;
+    font-size: 24px;
   }
 
   .home {
@@ -450,6 +449,103 @@ input::placeholder {
   }
 
   .hero h1 {
-    font-size: 36px;
+    font-size: 42px;
+  }
+}
+
+@media (max-width: 420px) {
+  .header {
+    height: 60px;
+    padding: 0 16px;
+  }
+
+  .navigation {
+    gap: 15px;
+  }
+
+  .navigation a {
+    font-size: 13px;
+  }
+
+  .logo {
+    font-size: 22px;
+  }
+}
+
+
+/* Compact Store Selection page */
+
+.store-selection-page {
+  max-width: 1280px;
+  padding: 24px 28px 36px;
+}
+
+.store-back-link {
+  display: inline-block;
+  margin: 0 0 14px;
+  font-size: 13px;
+}
+
+.store-page-heading {
+  margin-bottom: 22px;
+}
+
+.store-page-heading h1 {
+  font-size: clamp(26px, 3vw, 34px);
+  letter-spacing: -1px;
+  margin: 8px 0;
+}
+
+.store-page-heading p {
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* Store selection content */
+
+.store-selection-page .stores-layout {
+  grid-template-columns: minmax(270px, 350px) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.store-selection-page .stores-panel {
+  padding: 18px;
+}
+
+.store-selection-page .stores-panel input {
+  margin: 8px 0 18px;
+}
+
+.store-selection-page .stores-panel h2 {
+  margin: 0 0 12px;
+}
+
+.store-selection-page .store-card {
+  padding: 12px;
+  margin: 8px 0;
+}
+
+.store-selection-page .map-placeholder {
+  min-height: 370px;
+}
+
+/* Mobile */
+
+@media (max-width: 800px) {
+  .store-selection-page {
+    padding: 22px 16px 32px;
+  }
+
+  .store-selection-page .stores-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .store-page-heading h1 {
+    font-size: 28px;
+  }
+
+  .store-selection-page .map-placeholder {
+    min-height: 260px;
   }
 }

@@ -52,8 +52,12 @@ export default function Search() {
           </p>
         )}
 
-        <Link className="button" to="/stores">
-          Choose supermarkets →
+        <Link
+            className="button"
+            to="/stores"
+            state={{ from: "/search" }}
+        >
+            Choose supermarkets →
         </Link>
 
         <span className="helper-text">

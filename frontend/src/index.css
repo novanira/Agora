@@ -1,4 +1,7 @@
-* {
-  font-family: 'Inter', sans-serif;
-  box-sizing: border-box;
+:root {
+  font-family: "DM Sans", sans-serif;
+}
+
+h1, h2, .agora-logo {
+  font-family: "Bricolage Grotesque", sans-serif;
 }
