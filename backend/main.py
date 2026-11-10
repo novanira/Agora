@@ -2,12 +2,15 @@
 from fastapi import FastAPI, Query
 from connectors.registry import connectors
 from fastapi.responses import JSONResponse
+
 from routes.optimise import router as optimise_router
+from routes.stores import router as stores_router
 
 
 app = FastAPI()
 
 app.include_router(optimise_router)
+app.include_router(stores_router)
 
 @app.get("/")
 async def root():
