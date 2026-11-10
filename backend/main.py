@@ -2,12 +2,22 @@
 from fastapi import FastAPI, Query
 from connectors.registry import connectors
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 from routes.optimise import router as optimise_router
 from routes.stores import router as stores_router
 
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "https://agora.gt.tc",
+    ],
+    allow_methods=["GET"],
+)
 
 app.include_router(optimise_router)
 app.include_router(stores_router)

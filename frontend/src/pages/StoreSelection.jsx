@@ -1,6 +1,7 @@
 
 import { useState } from "react";
 import { Link, useLocation } from "react-router";
+import StoreSelectionMap from "../components/StoreSelectionMap.jsx";
 
 const supermarkets = [
   { name: "Woolworths", color: "#168B5B" },
@@ -82,10 +83,8 @@ export default function StoreSelection() {
           </Link>
         </section>
 
-        <div className="map-placeholder">
-          <span className="map-icon">⌖</span>
-          <h2>Supermarket map</h2>
-          <p>Interactive map coming soon</p>
+        <div className="map-placeholder agora-store-map-frame">
+          <StoreSelectionMap />
         </div>
       </div>
     </main>
