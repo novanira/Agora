@@ -29,6 +29,7 @@ function AppLayout() {
           <NavLink to="/search">Search</NavLink>
         </nav>
       </header>
+      <div className="header-spacer" aria-hidden="true" />
 
       <Routes>
         <Route path="/" element={<Home />} />

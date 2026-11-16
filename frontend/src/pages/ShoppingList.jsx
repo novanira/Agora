@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
+import "./ShoppingList.css";
 
 const STORAGE_KEY = "agora-shopping-list";
 

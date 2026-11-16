@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
+import "./Home.css";
 
 const STORAGE_KEY = "agora-shopping-list";
 

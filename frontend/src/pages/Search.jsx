@@ -1,6 +1,7 @@
 
 import { useState } from "react";
 import { Link } from "react-router";
+import "./Search.css";
 
 export default function Search() {
   const [query, setQuery] = useState("");

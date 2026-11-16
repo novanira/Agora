@@ -1,0 +1,57 @@
+.home.started {
+  align-items: flex-start;
+}
+
+.started .home-content {
+  text-align: left;
+  padding-top: 35px;
+}
+
+.shopping-list {
+  margin-top: 25px;
+  border: 1px solid #e3eae3;
+  border-radius: 15px;
+  padding: 23px;
+  background: white;
+  animation: appear 0.45s ease both;
+}
+
+.shopping-list h2 {
+  font-size: 17px;
+  margin: 0 0 18px;
+}
+
+.shopping-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid #eff2ee;
+  font-size: 14px;
+}
+
+.item-circle {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #b9c9bd;
+  border-radius: 50%;
+}
+
+.page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 25px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shopping-list {
+    animation: none;
+  }
+}
+
+@media (max-width: 800px) {
+  .started .home-content {
+    padding-top: 0;
+  }
+}

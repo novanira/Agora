@@ -1,0 +1,37 @@
+.search-bar {
+  margin-bottom: 30px;
+}
+
+.empty-card {
+  border: 1px dashed #d3e1d4;
+  background: #f1f7f0;
+  border-radius: 18px;
+  padding: 55px 25px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 13px;
+}
+
+.empty-card h2 {
+  font-size: 20px;
+  margin: 0;
+}
+
+.empty-card p {
+  color: #728076;
+  max-width: 370px;
+  font-size: 14px;
+  line-height: 1.7;
+  margin: 0 0 8px;
+}
+
+.empty-icon {
+  font-size: 35px;
+  color: #287753;
+}
+
+.search-notice {
+  font-style: italic;
+}

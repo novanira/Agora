@@ -25,7 +25,13 @@ const POINTS = "agora-store-points";
 const INDIVIDUAL_STORES = ["!", ["has", "point_count"]];
 const EMPTY_GEOJSON = { type: "FeatureCollection", features: [] };
 
-export default function StoreMap({ storesUrl = STORES_URL, onSelectStore }) {
+export default function StoreMap({
+  storesUrl = STORES_URL,
+  searchQuery = "",
+  onSelectStore,
+  onRemoveStore,
+  addedStoreKeys,
+}) {
   const [storesByChain, setStoresByChain] = useState(null);
   const [error, setError] = useState(null);
 
@@ -65,14 +71,55 @@ export default function StoreMap({ storesUrl = STORES_URL, onSelectStore }) {
   if (error) return <p role="alert">{error}</p>;
   if (!storesByChain) return <p role="status">Loading stores…</p>;
 
-  return <StoreMapView storesByChain={storesByChain} onSelectStore={onSelectStore} />;
+  return (
+    <StoreMapView
+      storesByChain={storesByChain}
+      searchQuery={searchQuery}
+      onSelectStore={onSelectStore}
+      onRemoveStore={onRemoveStore}
+      addedStoreKeys={addedStoreKeys}
+    />
+  );
 }
 
-function buildStoreData(storesByChain) {
+function normalizeSearchText(text) {
+  return text.normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .toLowerCase()
+    .replace(/['‘’ʼ]/g, "")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+function storeMatchesSearch(store, chainLabel, terms) {
+  if (!terms.length) return true;
+
+  const locationFields = [store, store.address].flatMap((location) => {
+    const postcode = location?.postcode ?? location?.postCode
+      ?? location?.postalCode ?? location?.postal_code;
+
+    return [
+      location?.addressLine1, location?.addressLine2, location?.formattedAddress,
+      location?.street, location?.suburb, location?.locality, location?.city,
+      location?.town, location?.region,
+      typeof postcode === "number" ? String(postcode).padStart(4, "0") : postcode,
+    ];
+  });
+  const searchableText = normalizeSearchText(
+    [chainLabel, store.name, store.address, ...locationFields]
+      .filter((value) => typeof value === "string")
+      .join(" "),
+  );
+
+  return terms.every((term) => searchableText.includes(term));
+}
+
+function buildStoreData(storesByChain, searchQuery) {
   const byKey = new Map();
   const countsByChain = {};
   const features = [];
   const bounds = new LngLatBounds();
+  const terms = normalizeSearchText(searchQuery).split(" ").filter(Boolean);
 
   for (const chain of CHAINS) {
     countsByChain[chain.key] = 0;
@@ -91,10 +138,14 @@ function buildStoreData(storesByChain) {
       ) {
         continue;
       }
+      if (!storeMatchesSearch(store, chain.label, terms)) continue;
 
       const key = `${chain.key}:${id}`;
       const coordinates = [longitude, latitude];
-      byKey.set(key, { chain: chain.key, store });
+      const name = (typeof store.name === "string" && store.name.trim()) || chain.label;
+      const address = [store.address, store.address?.formattedAddress, store.address?.addressLine1]
+        .find((value) => typeof value === "string" && value.trim()) ?? "";
+      byKey.set(key, { chain: chain.key, store, name, address });
       countsByChain[chain.key] += 1;
       bounds.extend(coordinates);
       features.push({
@@ -104,27 +155,45 @@ function buildStoreData(storesByChain) {
         properties: {
           key,
           color: chain.color,
-          name: typeof store.name === "string" ? store.name : "",
+          name,
         },
       });
     }
   }
 
-  return { byKey, bounds, countsByChain, geojson: { type: "FeatureCollection", features } };
+  return {
+    byKey, bounds, countsByChain, isSearching: terms.length > 0,
+    geojson: { type: "FeatureCollection", features },
+  };
 }
 
-function StoreMapView({ storesByChain, onSelectStore }) {
+function StoreMapView({ storesByChain, searchQuery, onSelectStore, onRemoveStore, addedStoreKeys }) {
   const containerRef = useRef(null);
   const legendRef = useRef(null);
   const detailsRef = useRef(null);
+  const resultsRef = useRef(null);
   const mapRef = useRef(null);
   const [status, setStatus] = useState("loading");
-  const [activeKey, setActiveKey] = useState(null);
-  const { byKey, bounds, countsByChain, geojson } = useMemo(
-    () => buildStoreData(storesByChain),
-    [storesByChain],
+  const [selection, setSelection] = useState(null);
+  const storeData = useMemo(
+    () => buildStoreData(storesByChain, searchQuery),
+    [storesByChain, searchQuery],
   );
+  const { byKey, countsByChain, isSearching } = storeData;
+  const activeKey = selection?.data === storeData ? selection.key : null;
   const active = byKey.get(activeKey);
+  const activeIsAdded = addedStoreKeys?.has(activeKey) ?? false;
+
+  function closeStoreDetails() {
+    setSelection(null);
+    const focusTarget = resultsRef.current ?? mapRef.current?.getCanvas();
+    focusTarget?.focus({ preventScroll: true });
+  }
+
+  function selectSearchResult(event) {
+    const key = event.target.value;
+    setSelection(byKey.has(key) ? { key, data: storeData, focusResult: true } : null);
+  }
 
   useEffect(() => {
     let map;
@@ -135,6 +204,11 @@ function StoreMapView({ storesByChain, onSelectStore }) {
         center: [173, -41],
         zoom: 4.5,
         scrollZoom: true,
+        fadeDuration: 0,
+        attributionControl: {
+          compact: false,
+          customAttribution: '<a href="https://maplibre.org/" target="_blank">MapLibre</a>',
+        },
         locale: { "GeolocateControl.FindMyLocation": "Use my location" },
       });
     } catch {
@@ -166,7 +240,7 @@ function StoreMapView({ storesByChain, onSelectStore }) {
         filter: ["has", "point_count"],
         paint: {
           "circle-color": "#263d56",
-          "circle-radius": ["step", ["get", "point_count"], 17, 20, 21, 60, 26],
+          "circle-radius": ["step", ["get", "point_count"], 14, 20, 17, 60, 21],
           "circle-stroke-color": "#fff",
           "circle-stroke-width": 2,
         },
@@ -216,27 +290,6 @@ function StoreMapView({ storesByChain, onSelectStore }) {
         },
       });
 
-      map.on("click", CLUSTERS, async ({ features }) => {
-        const cluster = features[0];
-        try {
-          const zoom = await map.getSource(SOURCE).getClusterExpansionZoom(
-            cluster.properties.cluster_id,
-          );
-          if (mapRef.current === map) {
-            setActiveKey(null);
-            map.easeTo({ center: cluster.geometry.coordinates, zoom });
-          }
-        } catch (error) {
-          if (mapRef.current === map) {
-            console.warn("Could not zoom to the store cluster.", error);
-          }
-        }
-      });
-
-      map.on("click", POINTS, ({ features }) => {
-        setActiveKey(features[0].properties.key);
-      });
-
       for (const layer of [CLUSTERS, POINTS]) {
         map.on("mouseenter", layer, () => {
           map.getCanvas().style.cursor = "pointer";
@@ -268,6 +321,30 @@ function StoreMapView({ storesByChain, onSelectStore }) {
     const source = map?.getSource(SOURCE);
     if (status !== "ready" || !source) return;
 
+    const { geojson, bounds } = storeData;
+    let current = true;
+
+    async function expandCluster({ features }) {
+      const cluster = features[0];
+      try {
+        const zoom = await source.getClusterExpansionZoom(cluster.properties.cluster_id);
+        if (current && mapRef.current === map) {
+          setSelection(null);
+          map.easeTo({ center: cluster.geometry.coordinates, zoom });
+        }
+      } catch (error) {
+        if (current && mapRef.current === map) {
+          console.warn("Could not zoom to the store cluster.", error);
+        }
+      }
+    }
+
+    function selectPin({ features }) {
+      setSelection({ key: features[0].properties.key, data: storeData });
+    }
+
+    map.on("click", CLUSTERS, expandCluster);
+    map.on("click", POINTS, selectPin);
     source.setData(geojson);
     if (!bounds.isEmpty()) {
       const canvas = containerRef.current.getBoundingClientRect();
@@ -285,7 +362,35 @@ function StoreMapView({ storesByChain, onSelectStore }) {
         duration: 0,
       });
     }
-  }, [status, bounds, geojson]);
+
+    return () => {
+      current = false;
+      map.off("click", CLUSTERS, expandCluster);
+      map.off("click", POINTS, selectPin);
+    };
+  }, [status, storeData]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !active || !selection?.focusResult) return;
+
+    const canvas = containerRef.current.getBoundingClientRect();
+    const legend = legendRef.current.getBoundingClientRect();
+    const details = detailsRef.current.getBoundingClientRect();
+    const top = Math.max(canvas.top, legend.bottom) + 12;
+    const bottom = Math.max(top, Math.min(canvas.bottom, details.top) - 30);
+    const { longitude, latitude } = active.store;
+
+    map.easeTo({
+      center: [longitude, latitude],
+      zoom: Math.max(map.getZoom(), 15),
+      offset: [0, (top + bottom - canvas.top - canvas.bottom) / 2],
+    });
+  }, [active, selection]);
+
+  const searchStatus = byKey.size === 0
+    ? "No supermarkets match this search."
+    : `${byKey.size} ${byKey.size === 1 ? "supermarket" : "supermarkets"} found.`;
 
   return (
     <section className="agora-store-map" aria-label="Store map">
@@ -309,26 +414,71 @@ function StoreMapView({ storesByChain, onSelectStore }) {
       </ul>
       <div className="agora-store-map__canvas" ref={containerRef} />
       <div className="agora-store-map__details" ref={detailsRef}>
-        <div role="status">
-          {status === "loading" && <p>Loading map…</p>}
-          {status === "error" && <p>The map couldn’t load.</p>}
-          {status === "ready" && (
-            active ? (
+        <div className="agora-store-map__detail-info">
+          <div role="status">
+            {status === "loading" && <p>Loading map…</p>}
+            {status === "error" && <p>The map couldn’t load.</p>}
+            {status === "ready" && active && (
               <>
-                <strong>{active.store.name}</strong>
-                <p>{active.store.address}</p>
+                <strong>{active.name}</strong>
+                {active.address && <p>{active.address}</p>}
               </>
-            ) : (
+            )}
+            {status === "ready" && !active && (
               <p>
-                {byKey.size ? "Choose a pin to see store details." : "No store locations to show."}
+                {isSearching ? searchStatus : (
+                  byKey.size ? "Choose a pin to see store details." : "No store locations to show."
+                )}
               </p>
-            )
+            )}
+          </div>
+          {status === "ready" && isSearching && byKey.size > 0 && (
+            <select
+              className="agora-store-map__search-results"
+              aria-label="Matching supermarkets"
+              ref={resultsRef}
+              value={activeKey ?? ""}
+              onChange={selectSearchResult}
+            >
+              <option value="">Choose a supermarket</option>
+              {Array.from(byKey, ([key, { name, address }]) => (
+                <option key={key} value={key}>
+                  {address ? `${name} · ${address}` : name}
+                </option>
+              ))}
+            </select>
           )}
         </div>
-        {status === "ready" && active && onSelectStore && (
-          <button type="button" onClick={() => onSelectStore(active.chain, active.store)}>
-            Select store
-          </button>
+        {status === "ready" && active && (
+          <div className="agora-store-map__detail-actions">
+            <button
+              type="button"
+              className="button secondary"
+              aria-label="Close store details"
+              onClick={closeStoreDetails}
+            >
+              Close
+            </button>
+            {activeIsAdded && onRemoveStore ? (
+              <button
+                type="button"
+                className="agora-store-map__remove-button"
+                onClick={() => onRemoveStore(activeKey)}
+              >
+                Remove supermarket
+              </button>
+            ) : onSelectStore && (
+              <button
+                type="button"
+                aria-disabled={activeIsAdded}
+                onClick={() => {
+                  if (!activeIsAdded) onSelectStore(active.chain, active.store, activeKey);
+                }}
+              >
+                {activeIsAdded ? "Added" : "Add supermarket"}
+              </button>
+            )}
+          </div>
         )}
       </div>
     </section>
