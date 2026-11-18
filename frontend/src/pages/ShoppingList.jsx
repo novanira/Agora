@@ -3,6 +3,7 @@ import { Link } from "react-router";
 import "./ShoppingList.css";
 
 const STORAGE_KEY = "agora-shopping-list";
+const SUPERMARKETS_STORAGE_KEY = "agora-selected-supermarkets";
 
 function readSavedList() {
   try {
@@ -13,9 +14,29 @@ function readSavedList() {
   }
 }
 
+function readHasSupermarkets() {
+  try {
+    const saved = JSON.parse(
+      localStorage.getItem(SUPERMARKETS_STORAGE_KEY) ?? "[]",
+    );
+
+    return Array.isArray(saved) && saved.some(
+      (store) =>
+        ["woolworths", "new_world", "paknsave"].includes(store?.chain) &&
+        typeof store.id === "string" &&
+        typeof store.name === "string" &&
+        typeof store.address === "string",
+    );
+  } catch {
+    return false;
+  }
+}
+
 export default function ShoppingList() {
   const [items, setItems] = useState(readSavedList);
   const [input, setInput] = useState("");
+  const [hasSupermarkets] = useState(readHasSupermarkets);
+  const canOptimise = hasSupermarkets && items.length > 0;
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
@@ -81,15 +102,31 @@ export default function ShoppingList() {
 
           <div className="page-actions">
             <Link
-                className="button"
-                to="/stores"
-                state={{ from: "/list" }}
+              className={hasSupermarkets ? "button secondary" : "button"}
+              to="/stores"
+              state={{ from: "/list" }}
             >
-            Choose supermarkets
+              Choose Supermarkets
             </Link>
-            <Link className="button secondary" to="/search">
-              Search products
-            </Link>
+            {canOptimise ? (
+              <Link className="button" to="/product-selection">
+                Select Products
+              </Link>
+            ) : (
+              <button
+                type="button"
+                className="button secondary"
+                disabled
+                style={{ opacity: 0.5, cursor: "not-allowed" }}
+                title={
+                  !hasSupermarkets
+                    ? "Choose supermarkets first"
+                    : "Add an item to your shopping list first"
+                }
+              >
+                Select Products
+              </button>
+            )}
           </div>
         </section>
       </div>

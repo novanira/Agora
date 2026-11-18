@@ -1,0 +1,215 @@
+.optimisation-page {
+  --optimisation-accent: #287753;
+  --optimisation-border: #e3eae3;
+  --optimisation-muted: #566a5e;
+}
+
+.button.optimisation-back {
+  min-height: 44px;
+  margin-bottom: 12px;
+  gap: 8px;
+}
+
+.button.optimisation-back:hover {
+  background: #dfede1;
+}
+
+.optimisation-page :is(a, button, summary):focus-visible {
+  outline: 2px solid var(--optimisation-accent);
+  outline-offset: 3px;
+}
+
+.optimisation-overview,
+.optimisation-panel {
+  padding: clamp(16px, 3vw, 24px);
+  border: 1px solid var(--optimisation-border);
+  border-radius: 15px;
+  background: white;
+}
+
+.optimisation-page h2 {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+
+.optimisation-panel p,
+.optimisation-note {
+  margin: 0;
+  color: var(--optimisation-muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.optimisation-panel > :is(.button, button) {
+  margin-top: 16px;
+}
+
+.optimisation-overview {
+  margin-bottom: 24px;
+  background: #edf5ee;
+}
+
+.optimisation-total {
+  display: grid;
+  gap: 5px;
+}
+
+.optimisation-total h2,
+.optimisation-total p {
+  margin: 0;
+}
+
+.optimisation-price {
+  color: #1f6544;
+  font-size: clamp(30px, 5vw, 48px);
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.optimisation-total p {
+  font-size: 14px;
+}
+
+.optimisation-overview > .optimisation-note {
+  margin-top: 12px;
+}
+
+.optimisation-results {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 20px;
+}
+
+.optimisation-stores > .optimisation-panel + .optimisation-panel {
+  margin-top: 12px;
+}
+
+.optimisation-store-heading,
+.optimisation-product,
+.optimisation-option summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.optimisation-store-heading h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.optimisation-store-heading p {
+  margin-top: 3px;
+}
+
+.optimisation-store-heading > strong,
+.optimisation-product > div:last-child,
+.optimisation-option summary > span:nth-child(2) {
+  flex: none;
+  color: #1f6544;
+  font-variant-numeric: tabular-nums;
+}
+
+.optimisation-products {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+
+.optimisation-product,
+.optimisation-option {
+  padding: 10px 0;
+  border-top: 1px solid var(--optimisation-border);
+  font-size: 14px;
+}
+
+.optimisation-product:last-child,
+.optimisation-option:last-child {
+  padding-bottom: 0;
+}
+
+.optimisation-product > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.optimisation-product > div:last-child {
+  text-align: right;
+}
+
+.optimisation-product a {
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: #a3b5a8;
+  text-underline-offset: 2px;
+}
+
+.optimisation-product a:hover {
+  color: var(--optimisation-accent);
+  text-decoration-color: currentColor;
+}
+
+.optimisation-product .optimisation-note,
+.optimisation-query {
+  color: var(--optimisation-muted);
+  font-size: 12px;
+}
+
+.optimisation-store-heading > div,
+.optimisation-product > div,
+.optimisation-option summary > span:first-child {
+  overflow-wrap: anywhere;
+}
+
+.optimisation-option summary {
+  min-height: 44px;
+  align-items: center;
+  cursor: pointer;
+  font-weight: 600;
+  list-style: none;
+}
+
+.optimisation-option summary::before {
+  flex: none;
+  color: var(--optimisation-accent);
+  content: "+" / "";
+}
+
+.optimisation-option[open] summary::before {
+  content: "−" / "";
+}
+
+.optimisation-option summary > span:first-child {
+  flex: 1;
+}
+
+.optimisation-option summary > span:nth-child(2) {
+  text-align: right;
+}
+
+.optimisation-coverage {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.optimisation-option > .optimisation-note {
+  margin-top: 5px;
+}
+
+.optimisation-missing ul {
+  margin: 8px 0 0;
+  padding-inline-start: 20px;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+@media (width > 750px) {
+  .optimisation-results:has(> .optimisation-comparison) {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  }
+}

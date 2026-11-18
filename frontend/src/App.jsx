@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import {
   BrowserRouter,
   Routes,
@@ -10,11 +11,17 @@ import Home from "./pages/Home";
 import ShoppingList from "./pages/ShoppingList";
 import Search from "./pages/Search";
 import StoreSelection from "./pages/StoreSelection";
+import ProductSelection from "./pages/ProductSelection";
+import Optimisation from "./pages/Optimisation";
 
 import "./App.css";
 
 function AppLayout() {
-  const location = useLocation();
+  const { pathname } = useLocation();
+
+  useEffect(() => {
+    if (pathname === "/product-selection" || pathname === "/optimise") window.scrollTo(0, 0);
+  }, [pathname]);
 
   return (
     <div className="app">
@@ -36,6 +43,8 @@ function AppLayout() {
         <Route path="/list" element={<ShoppingList />} />
         <Route path="/search" element={<Search />} />
         <Route path="/stores" element={<StoreSelection />} />
+        <Route path="/product-selection" element={<ProductSelection />} />
+        <Route path="/optimise" element={<Optimisation />} />
       </Routes>
     </div>
   );
