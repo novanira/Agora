@@ -20,29 +20,40 @@ def _unique(values: list[str]) -> list[str]:
 
 
 async def _load_identities(product_ids: dict[str, set[str]]) -> dict:
-    # Every cross-retailer match must include an ID from each retailer, so
-    # looking up the smaller set finds every possible match in these results.
-    if not all(product_ids.values()):
-        return {}
+    new_world = product_ids["new_world"]
+    paknsave = product_ids["paknsave"]
+    woolworths = product_ids["woolworths"]
+    foodstuffs = new_world | paknsave
+    shared_foodstuffs = new_world & paknsave
 
-    supermarket = min(product_ids, key=lambda name: len(product_ids[name]))
-    column = "foodstuffs_id" if supermarket == "new_world" else "woolworths_id"
-    ids = sorted(product_ids[supermarket])
+    # Both Foodstuffs supermarkets use the same product ID column. For matches
+    # with Woolworths, look up the smaller side of that comparison as before.
+    lookups = {"foodstuffs_id": shared_foodstuffs}
+    if foodstuffs and woolworths:
+        if len(foodstuffs) <= len(woolworths):
+            lookups["foodstuffs_id"] = foodstuffs
+        else:
+            lookups["woolworths_id"] = woolworths
+
     requests = []
+    for column, product_ids_for_column in lookups.items():
+        ids = sorted(product_ids_for_column)
+        for start in range(0, len(ids), 400):
+            batch = ids[start:start + 400]
+            placeholders = ",".join("?" for _ in batch)
+            requests.append({
+                "type": "execute",
+                "stmt": {
+                    "sql": (
+                        "SELECT id, barcode, foodstuffs_id, woolworths_id "
+                        f"FROM product_identities WHERE {column} IN ({placeholders})"
+                    ),
+                    "args": [{"type": "text", "value": value} for value in batch],
+                },
+            })
 
-    for start in range(0, len(ids), 400):
-        batch = ids[start:start + 400]
-        placeholders = ",".join("?" for _ in batch)
-        requests.append({
-            "type": "execute",
-            "stmt": {
-                "sql": (
-                    "SELECT id, barcode, foodstuffs_id, woolworths_id "
-                    f"FROM product_identities WHERE {column} IN ({placeholders})"
-                ),
-                "args": [{"type": "text", "value": value} for value in batch],
-            },
-        })
+    if not requests:
+        return {}
 
     url = os.getenv("TURSO_DATABASE_URL", TURSO_DATABASE_URL)
     url = url.replace("libsql://", "https://", 1).rstrip("/")
@@ -66,7 +77,7 @@ async def _load_identities(product_ids: dict[str, set[str]]) -> dict:
     for result in results[:-1]:
         for row in result["response"]["result"]["rows"]:
             identity = (int(row[0]["value"]), row[1].get("value"))
-            for supermarket, index in (("new_world", 2), ("woolworths", 3)):
+            for supermarket, index in (("new_world", 2), ("woolworths", 3), ("paknsave", 2)):
                 product_id = row[index].get("value")
                 if product_id is not None:
                     identities[(supermarket, product_id)] = identity
@@ -104,7 +115,7 @@ def _match_products(stores: list[dict], queries: list[str], identities: dict) ->
 
         matches[query] = [
             group for group in groups.values()
-            if len({product["supermarket"] for product in group["products"]}) == 2
+            if len({product["supermarket"] for product in group["products"]}) >= 2
         ]
 
     return matches
@@ -115,6 +126,7 @@ async def optimise(
     query: list[str] = Query(...),
     new_world_store_ids: list[str] = Query(default=[]),
     woolworths_store_ids: list[str] = Query(default=[]),
+    paknsave_store_ids: list[str] = Query(default=[]),
 ):
     """Fetch up to 48 products per query/store and match using existing identities.
 
@@ -128,6 +140,7 @@ async def optimise(
         for supermarket, store_ids in (
             ("new_world", new_world_store_ids),
             ("woolworths", woolworths_store_ids),
+            ("paknsave", paknsave_store_ids),
         )
         for store_id in _unique(store_ids)
     ]
@@ -170,7 +183,7 @@ async def optimise(
     results = await asyncio.gather(
         *(search_store(supermarket, store_id) for supermarket, store_id in stores)
     )
-    product_ids = {"new_world": set(), "woolworths": set()}
+    product_ids = {"new_world": set(), "woolworths": set(), "paknsave": set()}
     for store in results:
         if store["products"] is not None:
             product_ids[store["supermarket"]].update(
