@@ -4,14 +4,8 @@
   --optimisation-muted: #566a5e;
 }
 
-.button.optimisation-back {
-  min-height: 44px;
-  margin-bottom: 12px;
-  gap: 8px;
-}
-
-.button.optimisation-back:hover {
-  background: #dfede1;
+.page.optimisation-page {
+    padding-top: 32px;
 }
 
 .optimisation-page :is(a, button, summary):focus-visible {

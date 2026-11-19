@@ -54,6 +54,30 @@ button:hover, .button:hover {
   color: #287753;
 }
 
+.button.secondary:is(.product-selection-back, .optimisation-back) {
+  min-height: 32px;
+  padding: 0;
+  gap: 7px;
+  background: transparent;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+:is(.product-selection-back, .optimisation-back):hover {
+  text-decoration: underline;
+}
+
+.button.secondary:is(.product-selection-back, .optimisation-back):focus-visible {
+  outline: 2px solid #287753;
+  outline-offset: 2px;
+}
+
+@media (pointer: coarse) {
+  .button.secondary:is(.product-selection-back, .optimisation-back) {
+    min-height: 44px;
+  }
+}
+
 input {
   width: 100%;
   min-width: 0;
@@ -142,7 +166,7 @@ input::placeholder {
 .page {
   max-width: 1100px;
   margin: 0 auto;
-  padding: 65px 25px;
+  padding: 52px 25px;
 }
 
 .page-heading {

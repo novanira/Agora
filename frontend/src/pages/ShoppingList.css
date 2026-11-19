@@ -1,10 +1,11 @@
 .home.started {
   align-items: flex-start;
+  padding-bottom: 50px;
 }
 
 .started .home-content {
   text-align: left;
-  padding-top: 35px;
+  padding-top: 18px;
 }
 
 .shopping-list {

@@ -6,18 +6,6 @@
   padding: 32px clamp(16px, 4vw, 40px) 30px;
 }
 
-.button.secondary.product-selection-back {
-  min-height: 32px;
-  padding: 0;
-  gap: 7px;
-  background: transparent;
-  font-weight: 700;
-}
-
-.product-selection-back:hover {
-  text-decoration: underline;
-}
-
 .product-selection-page .page-heading {
   margin: 4px 0 24px;
 }
@@ -382,7 +370,6 @@
 }
 
 @media (pointer: coarse) {
-  .button.secondary.product-selection-back,
   .button.product-selection-more,
   :is(.product-selection-auto, .product-selection-filter-toggle, .product-selection-scroll-button) {
     min-height: 44px;

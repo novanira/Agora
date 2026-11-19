@@ -39,7 +39,7 @@ function AppLayout() {
       <div className="header-spacer" aria-hidden="true" />
 
       <Routes>
-        <Route path="/" element={<Home />} />
+        <Route path="/" element={<Home enableAds={true}/>} />
         <Route path="/list" element={<ShoppingList />} />
         <Route path="/search" element={<Search />} />
         <Route path="/stores" element={<StoreSelection />} />

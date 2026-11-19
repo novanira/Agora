@@ -13,7 +13,7 @@ function readSavedList() {
   }
 }
 
-export default function Home() {
+export default function Home({enableAds}) {
   const [input, setInput] = useState("");
   const navigate = useNavigate();
 
@@ -28,9 +28,9 @@ export default function Home() {
   }
 
   return (
-    <main className="home">
+    <main className="home" style={enableAds === true ? {paddingBottom: '24px'} : null}>
       <div className="home-content">
-        <div className="hero">
+        <div className="hero" style={enableAds === true ? {padding: '18px 0px 0px 0px'} : null}>
           <span className="eyebrow">OPTIMISED SHOPPING FOR EVERYONE</span>
           <h1>
             Your whole grocery shop,
@@ -56,6 +56,17 @@ export default function Home() {
         <Link className="text-link" to="/search">
           Just comparing prices? Search products →
         </Link>
+        {enableAds === true ? <div style={{ display: "flex", justifyContent: "center", marginTop: 32 }}>
+          <iframe
+            src={`${import.meta.env.BASE_URL}adsterra-banner.html`}
+            title="Advertisement"
+            width={320}
+            height={50}
+            loading="lazy"
+            sandbox="allow-scripts"
+            style={{ flexShrink: 0, border: 0 }}
+          />
+        </div> : null}
       </div>
     </main>
   );
