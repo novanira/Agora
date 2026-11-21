@@ -160,11 +160,11 @@ async def optimise(
                     queries=queries,
                     store_id=store_id,
                     limit=48,
-                    page=1,
+                    page=2,
                     pages=1,
                 )
                 result["products"] = {
-                    term: [vars(product) for product in matches.get(term, [])[:48]]
+                    term: [vars(product) for product in matches.get(term, [])[:96]]
                     for term in queries
                 }
             except Exception:

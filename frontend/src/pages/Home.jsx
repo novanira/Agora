@@ -63,7 +63,7 @@ export default function Home({enableAds}) {
             width={320}
             height={50}
             loading="lazy"
-            sandbox="allow-scripts"
+            sandbox="allow-scripts allow-popups"
             style={{ flexShrink: 0, border: 0 }}
           />
         </div> : null}

@@ -14,6 +14,8 @@ import StoreSelection from "./pages/StoreSelection";
 import ProductSelection from "./pages/ProductSelection";
 import Optimisation from "./pages/Optimisation";
 
+import AdWallEasterEgg from "./pages/AdWallEasterEgg";
+
 import "./App.css";
 
 function AppLayout() {
@@ -39,12 +41,13 @@ function AppLayout() {
       <div className="header-spacer" aria-hidden="true" />
 
       <Routes>
-        <Route path="/" element={<Home enableAds={true}/>} />
+        <Route path="/" element={<Home enableAds={false}/>} />
         <Route path="/list" element={<ShoppingList />} />
         <Route path="/search" element={<Search />} />
         <Route path="/stores" element={<StoreSelection />} />
         <Route path="/product-selection" element={<ProductSelection />} />
         <Route path="/optimise" element={<Optimisation />} />
+        {/* <Route path="/adwalleasteregg" element={<AdWallEasterEgg />} /> */}
       </Routes>
     </div>
   );

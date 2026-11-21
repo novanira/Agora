@@ -3,7 +3,7 @@
   --selection-border: #dfe8dd;
   --selection-muted: #53685b;
   --selection-active: #edf5ee;
-  padding: 32px clamp(16px, 4vw, 40px) 30px;
+  padding: 36px clamp(16px, 4vw, 40px) 30px;
 }
 
 .product-selection-page .page-heading {
