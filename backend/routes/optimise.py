@@ -93,12 +93,18 @@ def _match_products(stores: list[dict], queries: list[str], identities: dict) ->
             if store["products"] is None:
                 continue
 
+            supermarket = store["supermarket"]
             for product in store["products"][query]:
-                identity = identities.get(
-                    (store["supermarket"], str(product["product_id"]))
-                )
+                product_id = product["product_id"]
+                identity = identities.get((supermarket, str(product_id)))
                 if identity is None:
-                    continue
+                    if (
+                        supermarket not in ("new_world", "paknsave")
+                        or not isinstance(product_id, str)
+                        or not product_id.strip()
+                    ):
+                        continue
+                    identity = (f"foodstuffs:{product_id}", None)
 
                 identity_id, barcode = identity
                 group = groups.setdefault(identity_id, {
