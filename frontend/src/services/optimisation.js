@@ -206,7 +206,7 @@ function splitPackageVariants(group) {
     return variants;
 }
 
-function groupProductChoices(candidates, matches) {
+function groupProductChoices(candidates, matches, storeCount) {
     const { byRef, bySku } = indexMatches(matches, candidates);
     const groups = new Map();
 
@@ -228,11 +228,10 @@ function groupProductChoices(candidates, matches) {
             choices.push(productChoice(variantKey, variant));
         }
     }
-    return choices.sort((a, b) => {
-        const rankA = a.rank - Math.min(a.availableCount, 6);
-        const rankB = b.rank - Math.min(b.availableCount, 6);
-        return rankA - rankB || b.availableCount - a.availableCount;
-    });
+    const adjustedRank = ({ rank, availableCount }) =>
+        rank - Math.min(availableCount, 6) - (availableCount === storeCount ? 3 : 0);
+
+    return choices.sort((a, b) => adjustedRank(a) - adjustedRank(b) || b.availableCount - a.availableCount);
 }
 
 export function describeProductChoice({ key, offers }) {
@@ -321,7 +320,7 @@ function buildCatalog(response, items, stores) {
                 }
             }
         }
-        productsByQuery.set(item.key, groupProductChoices(candidates, matchesByQuery.get(item.key)));
+        productsByQuery.set(item.key, groupProductChoices(candidates, matchesByQuery.get(item.key), stores.length));
         automaticByQuery.set(item.key, automatic);
     }
 

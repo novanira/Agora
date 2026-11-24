@@ -19,12 +19,18 @@ function branchAvailability(store, offer) {
 }
 
 function BranchOffers({ stores, choice }) {
-  const size = productSize(choice.product);
-
   return (
-    <div className="product-selection-offers">
-      <strong>{choice.product.name}{size && ` · ${size}`}</strong>
-      <ul className="product-selection-stores" aria-label={`Store availability for ${choice.product.name}`}>
+    <div
+      className="product-selection-offers"
+      role="region"
+      aria-label={`Store availability for ${choice.product.name}`}
+      tabIndex={0}
+    >
+      <ul
+        className="product-selection-stores"
+        role="list"
+        style={{ "--store-columns": Math.ceil(stores.length / 2) }}
+      >
         {stores.map((store) => (
           <li key={store.key}>
             <span>{store.name}{store.address && <small className="product-selection-muted">{store.address}</small>}</span>
