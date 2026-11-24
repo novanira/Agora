@@ -1,0 +1,221 @@
+.account-page {
+  min-height: calc(100vh - var(--header-height, 64px));
+  padding: clamp(42px, 7vw, 72px) clamp(22px, 5vw, 48px);
+  display: grid;
+  place-items: center;
+}
+
+.account-content {
+  width: 100%;
+  min-width: 0;
+  max-width: 420px;
+}
+
+.account-content h1 {
+  margin: 0;
+  font-family: "Bricolage Grotesque", "DM Sans", sans-serif;
+  font-size: clamp(36px, 4vw, 45px);
+  font-weight: 750;
+  line-height: 1.02;
+  letter-spacing: -0.05em;
+}
+
+.account-content h1:focus {
+  outline: none;
+}
+
+.account-description {
+  margin: 14px 0 30px;
+  color: #57685d;
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+.account-form {
+  display: grid;
+  gap: 18px;
+}
+
+.account-field {
+  display: grid;
+  gap: 7px;
+}
+
+.account-field label {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.account-form input {
+  min-height: 48px;
+  border-color: #c9d5ca;
+  font-size: 16px;
+}
+
+.account-form input::placeholder {
+  color: #69786e;
+}
+
+.account-form input:focus {
+  border-color: #287753;
+  box-shadow: 0 0 0 2px #28775338;
+}
+
+.account-form input[aria-invalid="true"] {
+  border-color: #a13630;
+}
+
+.account-password {
+  position: relative;
+}
+
+.account-password input {
+  padding-inline-end: 76px;
+}
+
+.account-password .account-password-toggle {
+  position: absolute;
+  inset: 2px 2px 2px auto;
+  min-width: 60px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: transparent;
+  color: #226243;
+  font-size: 14px;
+}
+
+.account-password .account-password-toggle:hover {
+  background: #edf5ee;
+}
+
+.account-form .account-submit {
+  min-height: 48px;
+  margin-top: 2px;
+  font-size: 15px;
+}
+
+.account-error,
+.account-feedback {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.account-error {
+  color: #a13630;
+}
+
+.account-feedback {
+  color: #226243;
+}
+
+.account-feedback:empty {
+  position: absolute;
+}
+
+.account-flow {
+  width: 100%;
+  min-width: 0;
+  margin-top: 20px;
+}
+
+.account-message {
+  margin: 16px 0;
+  color: #57685d;
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.account-flow-error .account-message {
+  color: #a13630;
+}
+
+.account-switch {
+  margin: 24px 0 0;
+  padding-top: 22px;
+  border-top: 1px solid #dce5da;
+  color: #57685d;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.account-switch a {
+  color: #226243;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.account-page :is(button, a):focus-visible,
+.navigation .agora-account-nav-link:focus-visible {
+  outline: 2px solid #287753;
+  outline-offset: 3px;
+}
+
+.agora-account-nav {
+  position: relative;
+}
+
+.navigation .agora-account-nav-link {
+  border: 1px solid #c8dacd;
+  border-radius: 9px;
+  padding: 7px 11px;
+  color: #226243;
+  font-weight: 700;
+}
+
+.navigation button.agora-account-nav-link {
+  background: transparent;
+  font-size: 15px;
+  white-space: nowrap;
+}
+
+.navigation .agora-account-nav-link:hover,
+.navigation .agora-account-nav-link.active {
+  background: #edf5ee;
+  color: #226243;
+}
+
+.navigation .agora-account-nav-link:disabled {
+  cursor: wait;
+}
+
+.account-logout-error {
+  position: absolute;
+  inset: calc(100% + 8px) 0 auto auto;
+  width: max-content;
+  max-width: min(220px, 80vw);
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid #e7ede7;
+  border-radius: 8px;
+  background: white;
+  color: #a13630;
+  font-size: 13px;
+}
+
+@media (max-width: 800px) {
+  .account-page {
+    align-items: start;
+  }
+}
+
+@media (max-width: 430px) {
+  .header:has(.agora-account-nav-link) {
+    padding-inline: 12px;
+    gap: 12px;
+  }
+
+  .navigation:has(.agora-account-nav-link) {
+    gap: 9px;
+  }
+
+  .navigation .agora-account-nav-link {
+    padding-inline: 8px;
+    white-space: nowrap;
+  }
+
+  .navigation button.agora-account-nav-link {
+    font-size: 13px;
+  }
+}
