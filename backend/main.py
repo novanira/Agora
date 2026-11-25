@@ -24,7 +24,7 @@ app.include_router(stores_router)
 
 @app.get("/")
 async def root():
-    return "Not Found"
+    return "Not Found - please use the /test route to test the API"
 
 @app.get("/test")
 async def test():
